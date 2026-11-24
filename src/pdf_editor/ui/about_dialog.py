@@ -42,6 +42,10 @@ class AboutDialog(QDialog):
         copy_lbl.setStyleSheet("color: #59636E;")
         layout.addWidget(copy_lbl)
 
+        privacy_lbl = QLabel(t("about.privacy"))
+        privacy_lbl.setWordWrap(True)
+        layout.addWidget(privacy_lbl)
+
         lic_header = QLabel(t("about.licenses_header"))
         lic_header.setStyleSheet("font-weight: 600; margin-top: 6px;")
         layout.addWidget(lic_header)

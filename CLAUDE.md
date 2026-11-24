@@ -24,10 +24,19 @@ This repository is an application (not a Godot game) and therefore follows the P
 - `src/pdf_editor/ui/` – `PySide6` GUI layer (main editor window, interactive PDF canvas, setup dialog, progress toast, about dialog)
 - `locales/` – Translation JSON files (`en.json`, `cs.json`). **Zero user-visible strings in Python code.**
 
+## Naming
+- The player-facing name is **PDF Editor** (locales, About, Installed apps, `ProductName` in `assets/version_info.txt`, website). The repository, executable, install folder `%LOCALAPPDATA%\PdfEditor`, registry keys and `APP_NAME` stay `PdfEditor`.
+
 ## Key Commands
 - Run all tests: `.\scripts\test.ps1`
-- Build single distributable installer: `.\scripts\build.ps1` (outputs `dist\PdfEditor_Setup_v1.0.0.exe`, never committed to git)
+- Build single distributable installer: `.\scripts\build.ps1` (reads `VERSION` from `src/pdf_editor/__init__.py`, fails if `assets/version_info.txt` differs; outputs `dist\PdfEditor_Setup_v<version>.exe` and `.sha256`, never committed to git)
 - Run app in dev mode: `python run_app.py`
+
+## Releases and code signing
+- Version lives in `src/pdf_editor/__init__.py` (`VERSION`) and `assets/version_info.txt` (file/product version `X.Y.Z.0`); bump both plus `CHANGELOG.md`, follow `RELEASE_CHECKLIST.md`, tag `vX.Y.Z` on `main`.
+- Binaries are published only as GitHub Release assets (website links to `releases/latest`), never committed.
+- v1.0.0 was released unsigned and built locally (user decision, 24 Nov 2026), because SignPath Foundation only accepts already released projects.
+- Signed releases: run CI by hand with `build_exe` and `sign`; it needs the repository secret `SIGNPATH_API_TOKEN` and the variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_SIGNING_POLICY_SLUG`. The code signing policy text in `README.md` and `SECURITY.md` is required by SignPath Foundation; keep it.
 
 ## Rules Reminder
 1. Talk to the user in Czech; keep all code, comments, identifiers, docs, and commit messages in English.
