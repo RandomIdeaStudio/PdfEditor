@@ -41,6 +41,7 @@ class PdfCanvasWidget(QWidget):
     crop_selected = Signal(object)  # RectNorm
     zoom_requested = Signal(float)  # delta factor
     pan_requested = Signal(int, int)  # dx, dy scroll deltas in pixels
+    activated = Signal()  # emitted when the user interacts with this page
     status_hint = Signal(str)  # localized status message
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -227,6 +228,7 @@ class PdfCanvasWidget(QWidget):
             return super().mousePressEvent(event)
 
         self.setFocus()
+        self.activated.emit()
 
         if event.button() == Qt.MouseButton.RightButton and self._tool == ToolKind.POLYGON:
             if len(self._poly_points) >= 3:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -65,6 +65,9 @@ class MainWindow(QMainWindow):
         self._active_color: str = "#D1242F"
         self._fill_color: str = "#FEE2E2"
         self._current_tool: ToolKind = ToolKind.PAN
+        self._continuous_mode: bool = True
+        self._page_canvases: list[PdfCanvasWidget] = []
+        self._syncing_scroll: bool = False
 
         self.setWindowIcon(load_app_icon())
         self.resize(1240, 840)
@@ -172,6 +175,14 @@ class MainWindow(QMainWindow):
         self._act_watermark = QAction(self)
         self._act_watermark.triggered.connect(self._on_apply_watermark)
         self._menu_pages.addAction(self._act_watermark)
+
+        self._menu_pages.addSeparator()
+
+        self._act_continuous_view = QAction(self)
+        self._act_continuous_view.setCheckable(True)
+        self._act_continuous_view.setChecked(True)
+        self._act_continuous_view.toggled.connect(self._on_toggle_continuous_view)
+        self._menu_pages.addAction(self._act_continuous_view)
 
         # Tools menu
         self._menu_tools = mb.addMenu("")
@@ -353,7 +364,7 @@ class MainWindow(QMainWindow):
         self._stroke_spin = QSpinBox()
         self._stroke_spin.setRange(1, 24)
         self._stroke_spin.setValue(3)
-        self._stroke_spin.valueChanged.connect(lambda v: self._canvas.set_stroke_width(float(v)))
+        self._stroke_spin.valueChanged.connect(self._sync_all_canvases_settings)
         width_row.addWidget(self._stroke_lbl)
         width_row.addWidget(self._stroke_spin)
         shape_layout.addWidget(self._stroke_row_widget)
@@ -382,7 +393,7 @@ class MainWindow(QMainWindow):
         self._font_family_lbl = QLabel()
         self._font_combo = QComboBox()
         self._font_combo.addItems(list(AVAILABLE_FONTS))
-        self._font_combo.currentTextChanged.connect(lambda f: self._canvas.set_font_family(f))
+        self._font_combo.currentTextChanged.connect(self._sync_all_canvases_settings)
         font_row.addWidget(self._font_family_lbl)
         font_row.addWidget(self._font_combo, stretch=1)
         text_layout.addLayout(font_row)
@@ -392,7 +403,7 @@ class MainWindow(QMainWindow):
         self._font_spin = QSpinBox()
         self._font_spin.setRange(8, 72)
         self._font_spin.setValue(16)
-        self._font_spin.valueChanged.connect(lambda v: self._canvas.set_font_size(float(v)))
+        self._font_spin.valueChanged.connect(self._sync_all_canvases_settings)
         size_row.addWidget(self._font_size_lbl)
         size_row.addWidget(self._font_spin)
         text_layout.addLayout(size_row)
@@ -407,19 +418,19 @@ class MainWindow(QMainWindow):
         self._btn_bold = QPushButton()
         self._btn_bold.setCheckable(True)
         self._btn_bold.setStyleSheet(toggle_style + "QPushButton { font-weight: 700; }")
-        self._btn_bold.toggled.connect(lambda v: self._canvas.set_bold(v))
+        self._btn_bold.toggled.connect(self._sync_all_canvases_settings)
         style_row.addWidget(self._btn_bold)
 
         self._btn_italic = QPushButton()
         self._btn_italic.setCheckable(True)
         self._btn_italic.setStyleSheet(toggle_style + "QPushButton { font-style: italic; }")
-        self._btn_italic.toggled.connect(lambda v: self._canvas.set_italic(v))
+        self._btn_italic.toggled.connect(self._sync_all_canvases_settings)
         style_row.addWidget(self._btn_italic)
 
         self._btn_underline = QPushButton()
         self._btn_underline.setCheckable(True)
         self._btn_underline.setStyleSheet(toggle_style + "QPushButton { text-decoration: underline; }")
-        self._btn_underline.toggled.connect(lambda v: self._canvas.set_underline(v))
+        self._btn_underline.toggled.connect(self._sync_all_canvases_settings)
         style_row.addWidget(self._btn_underline)
         style_row.addStretch()
         text_layout.addLayout(style_row)
@@ -445,15 +456,6 @@ class MainWindow(QMainWindow):
         page_row.addWidget(self._btn_next_page)
         view_layout.addLayout(page_row)
 
-        rot_row = QHBoxLayout()
-        self._btn_rot_left = QPushButton("⟲ 90°")
-        self._btn_rot_left.clicked.connect(lambda: self._on_rotate_page(-90))
-        self._btn_rot_right = QPushButton("⟳ 90°")
-        self._btn_rot_right.clicked.connect(lambda: self._on_rotate_page(90))
-        rot_row.addWidget(self._btn_rot_left)
-        rot_row.addWidget(self._btn_rot_right)
-        view_layout.addLayout(rot_row)
-
         zoom_row = QHBoxLayout()
         self._btn_zoom_out = QPushButton()
         self._btn_zoom_out.clicked.connect(lambda: self._on_zoom_factor(1.0 / 1.15))
@@ -467,6 +469,73 @@ class MainWindow(QMainWindow):
         view_layout.addLayout(zoom_row)
 
         side_layout.addWidget(self._grp_view)
+
+        # Section 5: Page Actions (bottom-left card)
+        self._grp_page_ops = QGroupBox()
+        ops_grid = QGridLayout(self._grp_page_ops)
+        ops_grid.setSpacing(6)
+        ops_grid.setColumnStretch(0, 1)
+        ops_grid.setColumnStretch(1, 1)
+
+        ops_btn_style = (
+            "QPushButton { background: #FFFFFF; color: #1F2328; border: 1px solid #D0D7DE; "
+            "border-radius: 5px; padding: 5px 6px; font-size: 12px; }"
+            "QPushButton:hover { background: #EEF2F6; }"
+            "QPushButton:disabled { color: #9CA3AF; background: #F3F4F6; }"
+        )
+        ops_danger_style = (
+            "QPushButton { background: #FFFFFF; color: #B42318; border: 1px solid #F3B3B8; "
+            "border-radius: 5px; padding: 5px 6px; font-size: 12px; }"
+            "QPushButton:hover { background: #FFF1F2; }"
+            "QPushButton:disabled { color: #9CA3AF; border-color: #D0D7DE; background: #F3F4F6; }"
+        )
+
+        self._btn_rot_left = QPushButton("⟲ 90°")
+        self._btn_rot_left.setStyleSheet(ops_btn_style)
+        self._btn_rot_left.clicked.connect(lambda: self._on_rotate_page(-90))
+        ops_grid.addWidget(self._btn_rot_left, 0, 0)
+
+        self._btn_rot_right = QPushButton("⟳ 90°")
+        self._btn_rot_right.setStyleSheet(ops_btn_style)
+        self._btn_rot_right.clicked.connect(lambda: self._on_rotate_page(90))
+        ops_grid.addWidget(self._btn_rot_right, 0, 1)
+
+        self._btn_insert_blank = QPushButton()
+        self._btn_insert_blank.setStyleSheet(ops_btn_style)
+        self._btn_insert_blank.clicked.connect(self._on_insert_blank_page)
+        ops_grid.addWidget(self._btn_insert_blank, 1, 0)
+
+        self._btn_insert_pdf = QPushButton()
+        self._btn_insert_pdf.setStyleSheet(ops_btn_style)
+        self._btn_insert_pdf.clicked.connect(self._on_insert_pdf_pages)
+        ops_grid.addWidget(self._btn_insert_pdf, 1, 1)
+
+        self._btn_move_up = QPushButton()
+        self._btn_move_up.setStyleSheet(ops_btn_style)
+        self._btn_move_up.clicked.connect(lambda: self._on_move_page(-1))
+        ops_grid.addWidget(self._btn_move_up, 2, 0)
+
+        self._btn_move_down = QPushButton()
+        self._btn_move_down.setStyleSheet(ops_btn_style)
+        self._btn_move_down.clicked.connect(lambda: self._on_move_page(1))
+        ops_grid.addWidget(self._btn_move_down, 2, 1)
+
+        self._btn_extract_pages = QPushButton()
+        self._btn_extract_pages.setStyleSheet(ops_btn_style)
+        self._btn_extract_pages.clicked.connect(self._on_extract_pages)
+        ops_grid.addWidget(self._btn_extract_pages, 3, 0)
+
+        self._btn_delete_page = QPushButton()
+        self._btn_delete_page.setStyleSheet(ops_danger_style)
+        self._btn_delete_page.clicked.connect(self._on_delete_page)
+        ops_grid.addWidget(self._btn_delete_page, 3, 1)
+
+        self._btn_watermark = QPushButton()
+        self._btn_watermark.setStyleSheet(ops_btn_style)
+        self._btn_watermark.clicked.connect(self._on_apply_watermark)
+        ops_grid.addWidget(self._btn_watermark, 4, 0, 1, 2)
+
+        side_layout.addWidget(self._grp_page_ops)
         side_layout.addStretch()
 
         self._sidebar_scroll.setWidget(self._sidebar)
@@ -525,17 +594,18 @@ class MainWindow(QMainWindow):
         host_layout.setSpacing(0)
 
         self._scroll = QScrollArea()
-        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self._scroll.setWidgetResizable(True)
         self._scroll.setStyleSheet("QScrollArea { background: #E5E7EB; border: none; }")
-        self._canvas = PdfCanvasWidget()
-        self._canvas.annotation_created.connect(self._on_annotation_created)
-        self._canvas.annotation_moved.connect(self._on_annotation_moved)
-        self._canvas.annotation_deleted.connect(self._on_annotation_deleted)
-        self._canvas.crop_selected.connect(self._on_crop_selected)
-        self._canvas.zoom_requested.connect(self._on_zoom_factor)
-        self._canvas.pan_requested.connect(self._on_pan_delta)
-        self._canvas.status_hint.connect(lambda msg: self.statusBar().showMessage(msg))
-        self._scroll.setWidget(self._canvas)
+        self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+
+        self._pages_container = QWidget()
+        self._pages_container.setStyleSheet("QWidget { background: #E5E7EB; }")
+        self._pages_layout = QVBoxLayout(self._pages_container)
+        self._pages_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self._pages_layout.setContentsMargins(24, 24, 24, 36)
+        self._pages_layout.setSpacing(18)
+        self._scroll.setWidget(self._pages_container)
         host_layout.addWidget(self._scroll)
 
         # Floating bottom-right zoom pill (- | 100% | +)
@@ -600,8 +670,25 @@ class MainWindow(QMainWindow):
         self._act_delete_page.setText(t("menu.pages.delete"))
         self._act_extract_pages.setText(t("menu.pages.extract"))
         self._act_watermark.setText(t("menu.pages.watermark"))
+        self._act_continuous_view.setText(t("menu.pages.continuous_view"))
         self._btn_rot_left.setToolTip(t("menu.pages.rotate_left"))
         self._btn_rot_right.setToolTip(t("menu.pages.rotate_right"))
+
+        self._grp_page_ops.setTitle(t("sidebar.page_ops_section"))
+        self._btn_insert_blank.setText(t("page_ops.blank"))
+        self._btn_insert_blank.setToolTip(t("menu.pages.insert_blank"))
+        self._btn_insert_pdf.setText(t("page_ops.from_pdf"))
+        self._btn_insert_pdf.setToolTip(t("menu.pages.insert_pdf"))
+        self._btn_move_up.setText(t("page_ops.move_up"))
+        self._btn_move_up.setToolTip(t("menu.pages.move_up"))
+        self._btn_move_down.setText(t("page_ops.move_down"))
+        self._btn_move_down.setToolTip(t("menu.pages.move_down"))
+        self._btn_extract_pages.setText(t("page_ops.extract"))
+        self._btn_extract_pages.setToolTip(t("menu.pages.extract"))
+        self._btn_delete_page.setText(t("page_ops.delete"))
+        self._btn_delete_page.setToolTip(t("menu.pages.delete"))
+        self._btn_watermark.setText(t("page_ops.watermark"))
+        self._btn_watermark.setToolTip(t("menu.pages.watermark"))
 
         self._menu_tools.setTitle(t("menu.tools"))
         preset_map = {p.key: p for p in PRESETS}
@@ -712,6 +799,13 @@ class MainWindow(QMainWindow):
         self._act_watermark.setEnabled(opened)
         self._btn_rot_left.setEnabled(opened)
         self._btn_rot_right.setEnabled(opened)
+        self._btn_insert_blank.setEnabled(opened)
+        self._btn_insert_pdf.setEnabled(opened)
+        self._btn_move_up.setEnabled(opened and self._page_index > 0)
+        self._btn_move_down.setEnabled(opened and self._page_index < self._doc.page_count - 1)
+        self._btn_extract_pages.setEnabled(opened)
+        self._btn_delete_page.setEnabled(opened and self._doc.page_count > 1)
+        self._btn_watermark.setEnabled(opened)
         self._btn_prev_page.setEnabled(opened and self._page_index > 0)
         self._btn_next_page.setEnabled(opened and self._page_index < self._doc.page_count - 1)
         self._btn_zoom_in.setEnabled(opened)
@@ -731,18 +825,118 @@ class MainWindow(QMainWindow):
             "QPushButton:disabled { opacity: 0.45; background: #E5E7EB; color: #9CA3AF; }"
         )
 
+    def _apply_canvas_settings(self, canvas: PdfCanvasWidget) -> None:
+        canvas.set_tool(self._current_tool)
+        canvas.set_color(self._active_color)
+        canvas.set_filled(self._fill_check.isChecked())
+        canvas.set_fill_color(self._fill_color)
+        canvas.set_stroke_width(float(self._stroke_spin.value()))
+        canvas.set_font_family(self._font_combo.currentText())
+        canvas.set_font_size(float(self._font_spin.value()))
+        canvas.set_bold(self._btn_bold.isChecked())
+        canvas.set_italic(self._btn_italic.isChecked())
+        canvas.set_underline(self._btn_underline.isChecked())
+
+    def _sync_all_canvases_settings(self, *_args) -> None:
+        for canvas in self._page_canvases:
+            self._apply_canvas_settings(canvas)
+
+    def _clear_page_canvases(self) -> None:
+        while self._pages_layout.count():
+            item = self._pages_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._page_canvases.clear()
+
+    def _create_page_canvas(self, page_idx: int) -> PdfCanvasWidget:
+        canvas = PdfCanvasWidget()
+        self._apply_canvas_settings(canvas)
+        canvas.activated.connect(lambda idx=page_idx: self._set_active_page(idx))
+        canvas.annotation_created.connect(
+            lambda item, idx=page_idx: self._on_annotation_created(idx, item)
+        )
+        canvas.annotation_moved.connect(
+            lambda a_idx, dx, dy, idx=page_idx: self._on_annotation_moved(idx, a_idx, dx, dy)
+        )
+        canvas.annotation_deleted.connect(
+            lambda a_idx, idx=page_idx: self._on_annotation_deleted(idx, a_idx)
+        )
+        canvas.crop_selected.connect(
+            lambda rect, idx=page_idx: self._on_crop_selected(idx, rect)
+        )
+        canvas.zoom_requested.connect(self._on_zoom_factor)
+        canvas.pan_requested.connect(self._on_pan_delta)
+        canvas.status_hint.connect(lambda msg: self.statusBar().showMessage(msg))
+        return canvas
+
+    def _canvas_for_page(self, page_idx: int) -> PdfCanvasWidget | None:
+        if self._continuous_mode:
+            if 0 <= page_idx < len(self._page_canvases):
+                return self._page_canvases[page_idx]
+            return None
+        if self._page_canvases and page_idx == self._page_index:
+            return self._page_canvases[0]
+        return None
+
+    def _set_active_page(self, page_idx: int) -> None:
+        if 0 <= page_idx < self._doc.page_count and page_idx != self._page_index:
+            self._page_index = page_idx
+            self._update_controls_state()
+
+    def _scroll_to_page(self, page_idx: int) -> None:
+        if not self._continuous_mode:
+            return
+        canvas = self._canvas_for_page(page_idx)
+        if canvas is None:
+            return
+        self._syncing_scroll = True
+        try:
+            target_y = max(0, canvas.y() - 18)
+            self._scroll.verticalScrollBar().setValue(target_y)
+        finally:
+            self._syncing_scroll = False
+
+    def _on_scroll_changed(self, _value: int) -> None:
+        if self._syncing_scroll or not self._continuous_mode or not self._page_canvases:
+            return
+        vbar = self._scroll.verticalScrollBar()
+        view_center = vbar.value() + (self._scroll.viewport().height() // 2)
+        best_idx = self._page_index
+        best_dist = float("inf")
+        for idx, canvas in enumerate(self._page_canvases):
+            page_center = canvas.y() + (canvas.height() // 2)
+            dist = abs(page_center - view_center)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        if best_idx != self._page_index:
+            self._page_index = best_idx
+            self._update_controls_state()
+
+    def _on_toggle_continuous_view(self, checked: bool) -> None:
+        self._continuous_mode = checked
+        if self._doc.is_open:
+            self._render_current_page()
+
     def _render_current_page(self) -> None:
+        self._clear_page_canvases()
         if not self._doc.is_open:
-            self._canvas.clear_page()
             return
         dpi = max(48.0, min(320.0, 110.0 * self._zoom))
-        pil_img = self._doc.render_page(self._page_index, dpi=dpi)
-        self._canvas.set_page_image(
-            pil_img, self._session.page_edits(self._page_index), self._zoom
-        )
+        indices = range(self._doc.page_count) if self._continuous_mode else [self._page_index]
+        for idx in indices:
+            pil_img = self._doc.render_page(idx, dpi=dpi)
+            canvas = self._create_page_canvas(idx)
+            canvas.set_page_image(pil_img, self._session.page_edits(idx), self._zoom)
+            self._pages_layout.addWidget(canvas, alignment=Qt.AlignmentFlag.AlignHCenter)
+            self._page_canvases.append(canvas)
+
         self._ov_zoom_pct.setText(f"{int(round(self._zoom * 100))}%")
         self._reposition_zoom_overlay()
         self._update_controls_state()
+        if self._continuous_mode and self._page_index > 0:
+            QTimer.singleShot(0, lambda idx=self._page_index: self._scroll_to_page(idx))
 
     def _reposition_zoom_overlay(self) -> None:
         self._zoom_overlay.adjustSize()
@@ -892,7 +1086,7 @@ class MainWindow(QMainWindow):
 
     def _select_tool(self, kind: ToolKind) -> None:
         self._current_tool = kind
-        self._canvas.set_tool(kind)
+        self._sync_all_canvases_settings()
         self._update_tool_property_visibility(kind)
 
     def _update_tool_property_visibility(self, kind: ToolKind) -> None:
@@ -927,13 +1121,13 @@ class MainWindow(QMainWindow):
         chosen = QColorDialog.getColor(QColor(self._active_color), self, t("dialog.color.title"))
         if chosen.isValid():
             self._active_color = chosen.name()
-            self._canvas.set_color(self._active_color)
+            self._sync_all_canvases_settings()
             self._update_color_button_style(self._color_btn, self._active_color)
             self._update_color_button_style(self._text_color_btn, self._active_color)
 
     def _on_fill_toggled(self, checked: bool) -> None:
-        self._canvas.set_filled(checked)
         self._fill_color_btn.setEnabled(checked)
+        self._sync_all_canvases_settings()
         self._update_color_button_style(self._fill_color_btn, self._fill_color)
 
     def _on_pick_fill_color(self) -> None:
@@ -942,24 +1136,33 @@ class MainWindow(QMainWindow):
         )
         if chosen.isValid():
             self._fill_color = chosen.name()
-            self._canvas.set_fill_color(self._fill_color)
+            self._sync_all_canvases_settings()
             self._update_color_button_style(self._fill_color_btn, self._fill_color)
 
-    def _on_annotation_created(self, item: AnnotationItem) -> None:
-        self._session.add_annotation(self._page_index, item)
-        self._canvas.set_edits(self._session.page_edits(self._page_index))
+    def _on_annotation_created(self, page_idx: int, item: AnnotationItem) -> None:
+        self._page_index = page_idx
+        self._session.add_annotation(page_idx, item)
+        canvas = self._canvas_for_page(page_idx)
+        if canvas is not None:
+            canvas.set_edits(self._session.page_edits(page_idx))
         self._update_controls_state()
         if item.is_redaction:
             self.statusBar().showMessage(t("status.redaction_added"))
 
-    def _on_annotation_moved(self, annot_index: int, dx: float, dy: float) -> None:
-        self._session.move_annotation(self._page_index, annot_index, dx, dy)
-        self._canvas.set_edits(self._session.page_edits(self._page_index))
+    def _on_annotation_moved(self, page_idx: int, annot_index: int, dx: float, dy: float) -> None:
+        self._page_index = page_idx
+        self._session.move_annotation(page_idx, annot_index, dx, dy)
+        canvas = self._canvas_for_page(page_idx)
+        if canvas is not None:
+            canvas.set_edits(self._session.page_edits(page_idx))
         self._update_controls_state()
 
-    def _on_annotation_deleted(self, annot_index: int) -> None:
-        self._session.delete_annotation(self._page_index, annot_index)
-        self._canvas.set_edits(self._session.page_edits(self._page_index))
+    def _on_annotation_deleted(self, page_idx: int, annot_index: int) -> None:
+        self._page_index = page_idx
+        self._session.delete_annotation(page_idx, annot_index)
+        canvas = self._canvas_for_page(page_idx)
+        if canvas is not None:
+            canvas.set_edits(self._session.page_edits(page_idx))
         self._update_controls_state()
 
     def _ensure_saved_before_page_op(self) -> bool:
@@ -1093,37 +1296,65 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
 
-    def _on_crop_selected(self, crop: RectNorm) -> None:
-        self._session.set_crop(self._page_index, crop)
-        self._canvas.set_edits(self._session.page_edits(self._page_index))
+    def _on_crop_selected(self, page_idx: int, crop: RectNorm) -> None:
+        self._page_index = page_idx
+        self._session.set_crop(page_idx, crop)
+        canvas = self._canvas_for_page(page_idx)
+        if canvas is not None:
+            canvas.set_edits(self._session.page_edits(page_idx))
         self._update_controls_state()
-        self.statusBar().showMessage(t("status.crop_applied", page=self._page_index + 1))
+        self.statusBar().showMessage(t("status.crop_applied", page=page_idx + 1))
 
     def _on_undo(self) -> None:
         changed_page = self._session.undo()
         if changed_page is not None:
             self._page_index = changed_page
-            self._render_current_page()
+            canvas = self._canvas_for_page(changed_page)
+            if canvas is not None:
+                canvas.set_edits(self._session.page_edits(changed_page))
+                self._scroll_to_page(changed_page)
+                self._update_controls_state()
+            else:
+                self._render_current_page()
 
     def _on_redo(self) -> None:
         changed_page = self._session.redo()
         if changed_page is not None:
             self._page_index = changed_page
-            self._render_current_page()
+            canvas = self._canvas_for_page(changed_page)
+            if canvas is not None:
+                canvas.set_edits(self._session.page_edits(changed_page))
+                self._scroll_to_page(changed_page)
+                self._update_controls_state()
+            else:
+                self._render_current_page()
 
     def _on_clear_page(self) -> None:
         self._session.clear_page(self._page_index)
-        self._render_current_page()
+        canvas = self._canvas_for_page(self._page_index)
+        if canvas is not None:
+            canvas.set_edits(self._session.page_edits(self._page_index))
+            self._update_controls_state()
+        else:
+            self._render_current_page()
 
     def _on_prev_page(self) -> None:
         if self._page_index > 0:
             self._page_index -= 1
-            self._render_current_page()
+            if self._continuous_mode:
+                self._scroll_to_page(self._page_index)
+                self._update_controls_state()
+            else:
+                self._render_current_page()
 
     def _on_next_page(self) -> None:
         if self._doc.is_open and self._page_index < self._doc.page_count - 1:
             self._page_index += 1
-            self._render_current_page()
+            if self._continuous_mode:
+                self._scroll_to_page(self._page_index)
+                self._update_controls_state()
+            else:
+                self._render_current_page()
 
     def _on_zoom_factor(self, factor: float) -> None:
         if not self._doc.is_open:
