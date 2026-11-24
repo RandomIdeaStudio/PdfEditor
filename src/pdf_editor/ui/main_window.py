@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self._zoom: float = 1.0
         self._active_color: str = "#D1242F"
         self._fill_color: str = "#FEE2E2"
+        self._current_tool: ToolKind = ToolKind.PAN
 
         self.setWindowIcon(load_app_icon())
         self.resize(1240, 840)
@@ -191,50 +192,106 @@ class MainWindow(QMainWindow):
         side_layout.setContentsMargins(10, 10, 14, 12)
         side_layout.setSpacing(10)
 
-        # Section 1: Tools
+        # Section 1: Grouped Tools
         self._grp_tools = QGroupBox()
-        tools_grid = QGridLayout(self._grp_tools)
-        tools_grid.setSpacing(6)
-        tools_grid.setColumnStretch(0, 1)
-        tools_grid.setColumnStretch(1, 1)
+        tools_root = QVBoxLayout(self._grp_tools)
+        tools_root.setSpacing(6)
 
         self._tool_btn_group = QButtonGroup(self)
         self._tool_btn_group.setExclusive(True)
         self._tool_buttons: dict[ToolKind, QPushButton] = {}
 
-        tool_order = [
-            ToolKind.PAN,
-            ToolKind.CROP,
-            ToolKind.RECT,
-            ToolKind.ELLIPSE,
-            ToolKind.POLYGON,
-            ToolKind.LINE,
-            ToolKind.ARROW,
-            ToolKind.HIGHLIGHT,
-            ToolKind.TEXT,
-            ToolKind.REDACT_BLACK,
-            ToolKind.REDACT_WHITE,
-        ]
         tool_style = (
             "QPushButton { background: #FFFFFF; color: #1F2328; border: 1px solid #D0D7DE; "
-            "border-radius: 5px; padding: 6px 6px; font-size: 12px; text-align: left; }"
+            "border-radius: 5px; padding: 6px 8px; font-size: 12px; text-align: left; }"
             "QPushButton:hover { background: #EEF2F6; }"
             "QPushButton:checked { background: #1F2328; color: #FFFFFF; border-color: #1F2328; font-weight: 600; }"
         )
-        for idx, kind in enumerate(tool_order):
+        redact_style = (
+            "QPushButton { background: #FFFFFF; color: #1F2328; border: 1px solid #F3B3B8; "
+            "border-radius: 5px; padding: 6px 8px; font-size: 12px; text-align: left; }"
+            "QPushButton:hover { background: #FFF1F2; }"
+            "QPushButton:checked { background: #B42318; color: #FFFFFF; border-color: #B42318; font-weight: 600; }"
+        )
+        sub_lbl_style = "color: #59636E; font-size: 11px; font-weight: 600; margin-top: 2px;"
+        redact_lbl_style = "color: #B42318; font-size: 11px; font-weight: 600; margin-top: 4px;"
+
+        def make_tool_btn(kind: ToolKind, destructive: bool = False) -> QPushButton:
             btn = QPushButton()
             btn.setCheckable(True)
-            btn.setStyleSheet(tool_style)
+            btn.setStyleSheet(redact_style if destructive else tool_style)
             btn.clicked.connect(lambda _checked=False, k=kind: self._select_tool(k))
             self._tool_btn_group.addButton(btn)
             self._tool_buttons[kind] = btn
-            row, col = divmod(idx, 2)
-            tools_grid.addWidget(btn, row, col)
+            return btn
+
+        def make_divider() -> QFrame:
+            line = QFrame()
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setStyleSheet("color: #E5E7EB;")
+            return line
+
+        # Subgroup 1: Page
+        self._lbl_grp_page = QLabel()
+        self._lbl_grp_page.setStyleSheet(sub_lbl_style)
+        tools_root.addWidget(self._lbl_grp_page)
+        grid_page = QGridLayout()
+        grid_page.setSpacing(6)
+        grid_page.setColumnStretch(0, 1)
+        grid_page.setColumnStretch(1, 1)
+        grid_page.addWidget(make_tool_btn(ToolKind.PAN), 0, 0)
+        grid_page.addWidget(make_tool_btn(ToolKind.CROP), 0, 1)
+        tools_root.addLayout(grid_page)
+
+        tools_root.addWidget(make_divider())
+
+        # Subgroup 2: Shapes & Lines
+        self._lbl_grp_shapes = QLabel()
+        self._lbl_grp_shapes.setStyleSheet(sub_lbl_style)
+        tools_root.addWidget(self._lbl_grp_shapes)
+        grid_shapes = QGridLayout()
+        grid_shapes.setSpacing(6)
+        grid_shapes.setColumnStretch(0, 1)
+        grid_shapes.setColumnStretch(1, 1)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.LINE), 0, 0)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.ARROW), 0, 1)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.RECT), 1, 0)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.ELLIPSE), 1, 1)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.POLYGON), 2, 0, 1, 2)
+        tools_root.addLayout(grid_shapes)
+
+        tools_root.addWidget(make_divider())
+
+        # Subgroup 3: Text & Markup
+        self._lbl_grp_text = QLabel()
+        self._lbl_grp_text.setStyleSheet(sub_lbl_style)
+        tools_root.addWidget(self._lbl_grp_text)
+        grid_text = QGridLayout()
+        grid_text.setSpacing(6)
+        grid_text.setColumnStretch(0, 1)
+        grid_text.setColumnStretch(1, 1)
+        grid_text.addWidget(make_tool_btn(ToolKind.TEXT), 0, 0)
+        grid_text.addWidget(make_tool_btn(ToolKind.HIGHLIGHT), 0, 1)
+        tools_root.addLayout(grid_text)
+
+        tools_root.addWidget(make_divider())
+
+        # Subgroup 4: Permanent Erase (Irreversible)
+        self._lbl_grp_redact = QLabel()
+        self._lbl_grp_redact.setStyleSheet(redact_lbl_style)
+        tools_root.addWidget(self._lbl_grp_redact)
+        grid_redact = QGridLayout()
+        grid_redact.setSpacing(6)
+        grid_redact.setColumnStretch(0, 1)
+        grid_redact.setColumnStretch(1, 1)
+        grid_redact.addWidget(make_tool_btn(ToolKind.REDACT_BLACK, destructive=True), 0, 0)
+        grid_redact.addWidget(make_tool_btn(ToolKind.REDACT_WHITE, destructive=True), 0, 1)
+        tools_root.addLayout(grid_redact)
 
         self._tool_buttons[ToolKind.PAN].setChecked(True)
         side_layout.addWidget(self._grp_tools)
 
-        # Section 2: Line & Shape properties
+        # Section 2: Line & Shape properties (context-sensitive)
         self._grp_shape = QGroupBox()
         shape_layout = QVBoxLayout(self._grp_shape)
         shape_layout.setSpacing(8)
@@ -243,7 +300,9 @@ class MainWindow(QMainWindow):
         self._color_btn.clicked.connect(self._on_pick_color)
         shape_layout.addWidget(self._color_btn)
 
-        width_row = QHBoxLayout()
+        self._stroke_row_widget = QWidget()
+        width_row = QHBoxLayout(self._stroke_row_widget)
+        width_row.setContentsMargins(0, 0, 0, 0)
         self._stroke_lbl = QLabel()
         self._stroke_spin = QSpinBox()
         self._stroke_spin.setRange(1, 24)
@@ -251,7 +310,7 @@ class MainWindow(QMainWindow):
         self._stroke_spin.valueChanged.connect(lambda v: self._canvas.set_stroke_width(float(v)))
         width_row.addWidget(self._stroke_lbl)
         width_row.addWidget(self._stroke_spin)
-        shape_layout.addLayout(width_row)
+        shape_layout.addWidget(self._stroke_row_widget)
 
         self._fill_check = QCheckBox()
         self._fill_check.toggled.connect(self._on_fill_toggled)
@@ -264,10 +323,14 @@ class MainWindow(QMainWindow):
 
         side_layout.addWidget(self._grp_shape)
 
-        # Section 3: Text Style properties
+        # Section 3: Text Style properties (context-sensitive)
         self._grp_text = QGroupBox()
         text_layout = QVBoxLayout(self._grp_text)
         text_layout.setSpacing(8)
+
+        self._text_color_btn = QPushButton()
+        self._text_color_btn.clicked.connect(self._on_pick_color)
+        text_layout.addWidget(self._text_color_btn)
 
         font_row = QHBoxLayout()
         self._font_family_lbl = QLabel()
@@ -413,7 +476,9 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._scroll)
 
         self._update_color_button_style(self._color_btn, self._active_color)
+        self._update_color_button_style(self._text_color_btn, self._active_color)
         self._update_color_button_style(self._fill_color_btn, self._fill_color)
+        self._update_tool_property_visibility(self._current_tool)
 
     def _retranslate_ui(self) -> None:
         self._update_window_title()
@@ -447,6 +512,10 @@ class MainWindow(QMainWindow):
         self._act_about.setText(t("menu.help.about"))
 
         self._grp_tools.setTitle(t("sidebar.tools_section"))
+        self._lbl_grp_page.setText(t("sidebar.group.page"))
+        self._lbl_grp_shapes.setText(t("sidebar.group.shapes"))
+        self._lbl_grp_text.setText(t("sidebar.group.text"))
+        self._lbl_grp_redact.setText(t("sidebar.group.redact"))
         self._grp_shape.setTitle(t("sidebar.shape_section"))
         self._grp_text.setTitle(t("sidebar.text_section"))
         self._grp_view.setTitle(t("sidebar.view_section"))
@@ -456,6 +525,7 @@ class MainWindow(QMainWindow):
             btn.setToolTip(t(f"tool.{kind.value}.tip"))
 
         self._color_btn.setText(t("toolbar.color"))
+        self._text_color_btn.setText(t("toolbar.text_color"))
         self._stroke_lbl.setText(t("toolbar.stroke"))
         self._fill_check.setText(t("toolbar.fill_enable"))
         self._fill_color_btn.setText(t("toolbar.fill_color"))
@@ -678,7 +748,35 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
 
     def _select_tool(self, kind: ToolKind) -> None:
+        self._current_tool = kind
         self._canvas.set_tool(kind)
+        self._update_tool_property_visibility(kind)
+
+    def _update_tool_property_visibility(self, kind: ToolKind) -> None:
+        """Show only the property controls relevant to the active tool."""
+        show_shape = kind in (
+            ToolKind.RECT,
+            ToolKind.ELLIPSE,
+            ToolKind.POLYGON,
+            ToolKind.LINE,
+            ToolKind.ARROW,
+            ToolKind.HIGHLIGHT,
+        )
+        show_fill = kind in (ToolKind.RECT, ToolKind.ELLIPSE, ToolKind.POLYGON)
+        show_stroke = kind in (
+            ToolKind.RECT,
+            ToolKind.ELLIPSE,
+            ToolKind.POLYGON,
+            ToolKind.LINE,
+            ToolKind.ARROW,
+        )
+        show_text = kind == ToolKind.TEXT
+
+        self._grp_shape.setVisible(show_shape)
+        self._stroke_row_widget.setVisible(show_stroke)
+        self._fill_check.setVisible(show_fill)
+        self._fill_color_btn.setVisible(show_fill)
+        self._grp_text.setVisible(show_text)
 
     def _on_pick_color(self) -> None:
         chosen = QColorDialog.getColor(QColor(self._active_color), self, t("dialog.color.title"))
@@ -686,6 +784,7 @@ class MainWindow(QMainWindow):
             self._active_color = chosen.name()
             self._canvas.set_color(self._active_color)
             self._update_color_button_style(self._color_btn, self._active_color)
+            self._update_color_button_style(self._text_color_btn, self._active_color)
 
     def _on_fill_toggled(self, checked: bool) -> None:
         self._canvas.set_filled(checked)
