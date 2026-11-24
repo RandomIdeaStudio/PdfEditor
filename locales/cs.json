@@ -156,7 +156,7 @@
 
   "about.title": "O aplikaci PdfEditor",
   "about.version": "Verze {version}",
-  "about.copyright": "Copyright © 2026 Random Idea Studio. Všechna práva vyhrazena.",
+  "about.copyright": "Copyright © 2026 Random Idea Studio. Šířeno pod licencí MIT.",
   "about.description": "Samostatný PDF editor se skutečným nevratným začerněním, zmenšováním PDF a tichým převodem souborů do PDF.",
   "about.licenses_header": "Použité open-source komponenty třetích stran:",
   "about.licenses_body": "• PySide6 / Qt 6 (LGPL-3.0)\n• pypdfium2 / PDFium (Apache-2.0 / BSD-3-Clause)\n• pypdf (BSD-3-Clause)\n• Pillow (MIT-CMU)\n• pywin32 (PSF-2.0)",

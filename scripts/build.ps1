@@ -17,6 +17,7 @@ python -m PyInstaller `
     --noconsole `
     --name PdfEditor `
     --icon assets\app.ico `
+    --version-file assets\version_info.txt `
     --add-data "assets\app.ico;assets" `
     --add-data "locales;locales" `
     --paths src `

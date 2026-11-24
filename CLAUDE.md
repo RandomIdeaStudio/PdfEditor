@@ -1,6 +1,6 @@
 # PdfEditor – Project Guide
 
-`PdfEditor` is a standalone Windows 10/11 desktop PDF editor, PDF downsizer, and silent file-to-PDF converter built by Random Idea Studio.
+`PdfEditor` is an open-source (MIT) standalone Windows 10/11 desktop PDF editor, PDF downsizer, and silent file-to-PDF converter built by Random Idea Studio.
 
 This repository is an application (not a Godot game) and therefore follows the Python + PySide6 desktop stack rather than Godot rules. All applicable studio rules from the workspace `CLAUDE.md` apply strictly.
 

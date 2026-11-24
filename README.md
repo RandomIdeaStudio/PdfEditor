@@ -31,3 +31,9 @@ Standalone Windows 10 & Windows 11 desktop application combining:
 - `PdfEditor.exe --convert "C:\path\file.docx" [--silent]` – silently convert a supported file to PDF
 - `PdfEditor.exe --setup` – open the Windows context menu installer window
 - `PdfEditor.exe --install [--silent]` / `--uninstall [--silent]` – install or remove Windows integration
+
+## License & Code Signing
+
+- Licensed under the **MIT License** (see [LICENSE](LICENSE)) with third-party notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- See [SECURITY.md](SECURITY.md) for our privacy guarantee (100% offline, zero telemetry) and SignPath Foundation code-signing policy.
+
