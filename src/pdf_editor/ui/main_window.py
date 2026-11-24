@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -36,7 +37,7 @@ from PySide6.QtWidgets import (
 
 from ..core.compressor import compress_pdf, format_size
 from ..core.converter import CONVERTIBLE_EXTENSIONS, convert_to_pdf, is_convertible
-from ..core.document import PdfDocumentService
+from ..core.document import PdfDocumentService, parse_page_range
 from ..core.i18n import get_i18n, t
 from ..core.models import (
     AVAILABLE_FONTS,
@@ -129,6 +130,48 @@ class MainWindow(QMainWindow):
         self._act_clear_page = QAction(self)
         self._act_clear_page.triggered.connect(self._on_clear_page)
         self._menu_edit.addAction(self._act_clear_page)
+
+        # Pages menu
+        self._menu_pages = mb.addMenu("")
+        self._act_rot_left = QAction(self)
+        self._act_rot_left.triggered.connect(lambda: self._on_rotate_page(-90))
+        self._menu_pages.addAction(self._act_rot_left)
+
+        self._act_rot_right = QAction(self)
+        self._act_rot_right.triggered.connect(lambda: self._on_rotate_page(90))
+        self._menu_pages.addAction(self._act_rot_right)
+
+        self._menu_pages.addSeparator()
+
+        self._act_insert_blank = QAction(self)
+        self._act_insert_blank.triggered.connect(self._on_insert_blank_page)
+        self._menu_pages.addAction(self._act_insert_blank)
+
+        self._act_insert_pdf = QAction(self)
+        self._act_insert_pdf.triggered.connect(self._on_insert_pdf_pages)
+        self._menu_pages.addAction(self._act_insert_pdf)
+
+        self._act_move_up = QAction(self)
+        self._act_move_up.triggered.connect(lambda: self._on_move_page(-1))
+        self._menu_pages.addAction(self._act_move_up)
+
+        self._act_move_down = QAction(self)
+        self._act_move_down.triggered.connect(lambda: self._on_move_page(1))
+        self._menu_pages.addAction(self._act_move_down)
+
+        self._act_delete_page = QAction(self)
+        self._act_delete_page.triggered.connect(self._on_delete_page)
+        self._menu_pages.addAction(self._act_delete_page)
+
+        self._act_extract_pages = QAction(self)
+        self._act_extract_pages.triggered.connect(self._on_extract_pages)
+        self._menu_pages.addAction(self._act_extract_pages)
+
+        self._menu_pages.addSeparator()
+
+        self._act_watermark = QAction(self)
+        self._act_watermark.triggered.connect(self._on_apply_watermark)
+        self._menu_pages.addAction(self._act_watermark)
 
         # Tools menu
         self._menu_tools = mb.addMenu("")
@@ -240,7 +283,9 @@ class MainWindow(QMainWindow):
         grid_page.setColumnStretch(0, 1)
         grid_page.setColumnStretch(1, 1)
         grid_page.addWidget(make_tool_btn(ToolKind.PAN), 0, 0)
-        grid_page.addWidget(make_tool_btn(ToolKind.CROP), 0, 1)
+        grid_page.addWidget(make_tool_btn(ToolKind.SELECT), 0, 1)
+        grid_page.addWidget(make_tool_btn(ToolKind.CROP), 1, 0)
+        grid_page.addWidget(make_tool_btn(ToolKind.IMAGE), 1, 1)
         tools_root.addLayout(grid_page)
 
         tools_root.addWidget(make_divider())
@@ -253,11 +298,12 @@ class MainWindow(QMainWindow):
         grid_shapes.setSpacing(6)
         grid_shapes.setColumnStretch(0, 1)
         grid_shapes.setColumnStretch(1, 1)
-        grid_shapes.addWidget(make_tool_btn(ToolKind.LINE), 0, 0)
-        grid_shapes.addWidget(make_tool_btn(ToolKind.ARROW), 0, 1)
-        grid_shapes.addWidget(make_tool_btn(ToolKind.RECT), 1, 0)
-        grid_shapes.addWidget(make_tool_btn(ToolKind.ELLIPSE), 1, 1)
-        grid_shapes.addWidget(make_tool_btn(ToolKind.POLYGON), 2, 0, 1, 2)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.FREEHAND), 0, 0)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.LINE), 0, 1)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.ARROW), 1, 0)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.RECT), 1, 1)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.ELLIPSE), 2, 0)
+        grid_shapes.addWidget(make_tool_btn(ToolKind.POLYGON), 2, 1)
         tools_root.addLayout(grid_shapes)
 
         tools_root.addWidget(make_divider())
@@ -399,6 +445,15 @@ class MainWindow(QMainWindow):
         page_row.addWidget(self._btn_next_page)
         view_layout.addLayout(page_row)
 
+        rot_row = QHBoxLayout()
+        self._btn_rot_left = QPushButton("⟲ 90°")
+        self._btn_rot_left.clicked.connect(lambda: self._on_rotate_page(-90))
+        self._btn_rot_right = QPushButton("⟳ 90°")
+        self._btn_rot_right.clicked.connect(lambda: self._on_rotate_page(90))
+        rot_row.addWidget(self._btn_rot_left)
+        rot_row.addWidget(self._btn_rot_right)
+        view_layout.addLayout(rot_row)
+
         zoom_row = QHBoxLayout()
         self._btn_zoom_out = QPushButton()
         self._btn_zoom_out.clicked.connect(lambda: self._on_zoom_factor(1.0 / 1.15))
@@ -474,6 +529,8 @@ class MainWindow(QMainWindow):
         self._scroll.setStyleSheet("QScrollArea { background: #E5E7EB; border: none; }")
         self._canvas = PdfCanvasWidget()
         self._canvas.annotation_created.connect(self._on_annotation_created)
+        self._canvas.annotation_moved.connect(self._on_annotation_moved)
+        self._canvas.annotation_deleted.connect(self._on_annotation_deleted)
         self._canvas.crop_selected.connect(self._on_crop_selected)
         self._canvas.zoom_requested.connect(self._on_zoom_factor)
         self._canvas.pan_requested.connect(self._on_pan_delta)
@@ -532,6 +589,19 @@ class MainWindow(QMainWindow):
         self._act_undo.setText(t("menu.edit.undo"))
         self._act_redo.setText(t("menu.edit.redo"))
         self._act_clear_page.setText(t("menu.edit.clear_page"))
+
+        self._menu_pages.setTitle(t("menu.pages"))
+        self._act_rot_left.setText(t("menu.pages.rotate_left"))
+        self._act_rot_right.setText(t("menu.pages.rotate_right"))
+        self._act_insert_blank.setText(t("menu.pages.insert_blank"))
+        self._act_insert_pdf.setText(t("menu.pages.insert_pdf"))
+        self._act_move_up.setText(t("menu.pages.move_up"))
+        self._act_move_down.setText(t("menu.pages.move_down"))
+        self._act_delete_page.setText(t("menu.pages.delete"))
+        self._act_extract_pages.setText(t("menu.pages.extract"))
+        self._act_watermark.setText(t("menu.pages.watermark"))
+        self._btn_rot_left.setToolTip(t("menu.pages.rotate_left"))
+        self._btn_rot_right.setToolTip(t("menu.pages.rotate_right"))
 
         self._menu_tools.setTitle(t("menu.tools"))
         preset_map = {p.key: p for p in PRESETS}
@@ -631,6 +701,17 @@ class MainWindow(QMainWindow):
         )
         for _key, act in self._downsize_actions:
             act.setEnabled(opened)
+        self._act_rot_left.setEnabled(opened)
+        self._act_rot_right.setEnabled(opened)
+        self._act_insert_blank.setEnabled(opened)
+        self._act_insert_pdf.setEnabled(opened)
+        self._act_move_up.setEnabled(opened and self._page_index > 0)
+        self._act_move_down.setEnabled(opened and self._page_index < self._doc.page_count - 1)
+        self._act_delete_page.setEnabled(opened and self._doc.page_count > 1)
+        self._act_extract_pages.setEnabled(opened)
+        self._act_watermark.setEnabled(opened)
+        self._btn_rot_left.setEnabled(opened)
+        self._btn_rot_right.setEnabled(opened)
         self._btn_prev_page.setEnabled(opened and self._page_index > 0)
         self._btn_next_page.setEnabled(opened and self._page_index < self._doc.page_count - 1)
         self._btn_zoom_in.setEnabled(opened)
@@ -817,6 +898,7 @@ class MainWindow(QMainWindow):
     def _update_tool_property_visibility(self, kind: ToolKind) -> None:
         """Show only the property controls relevant to the active tool."""
         show_shape = kind in (
+            ToolKind.FREEHAND,
             ToolKind.RECT,
             ToolKind.ELLIPSE,
             ToolKind.POLYGON,
@@ -826,6 +908,7 @@ class MainWindow(QMainWindow):
         )
         show_fill = kind in (ToolKind.RECT, ToolKind.ELLIPSE, ToolKind.POLYGON)
         show_stroke = kind in (
+            ToolKind.FREEHAND,
             ToolKind.RECT,
             ToolKind.ELLIPSE,
             ToolKind.POLYGON,
@@ -868,6 +951,147 @@ class MainWindow(QMainWindow):
         self._update_controls_state()
         if item.is_redaction:
             self.statusBar().showMessage(t("status.redaction_added"))
+
+    def _on_annotation_moved(self, annot_index: int, dx: float, dy: float) -> None:
+        self._session.move_annotation(self._page_index, annot_index, dx, dy)
+        self._canvas.set_edits(self._session.page_edits(self._page_index))
+        self._update_controls_state()
+
+    def _on_annotation_deleted(self, annot_index: int) -> None:
+        self._session.delete_annotation(self._page_index, annot_index)
+        self._canvas.set_edits(self._session.page_edits(self._page_index))
+        self._update_controls_state()
+
+    def _ensure_saved_before_page_op(self) -> bool:
+        if self._session.is_dirty:
+            return self._confirm_discard_unsaved()
+        return True
+
+    def _on_rotate_page(self, degrees: int) -> None:
+        if not self._doc.is_open or not self._ensure_saved_before_page_op():
+            return
+        try:
+            self._doc.rotate_page(self._page_index, degrees)
+            self._render_current_page()
+            self.statusBar().showMessage(t("status.page_rotated", page=self._page_index + 1))
+        except Exception as exc:
+            QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
+
+    def _on_insert_blank_page(self) -> None:
+        if not self._doc.is_open or not self._ensure_saved_before_page_op():
+            return
+        try:
+            insert_at = self._page_index + 1
+            count = self._doc.insert_blank_page(insert_at)
+            self._page_index = insert_at
+            self._render_current_page()
+            self.statusBar().showMessage(t("status.page_inserted", count=count))
+        except Exception as exc:
+            QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
+
+    def _on_insert_pdf_pages(self) -> None:
+        if not self._doc.is_open or not self._ensure_saved_before_page_op():
+            return
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            t("dialog.insert_pdf.title"),
+            "",
+            t("dialog.open_pdf.filter"),
+        )
+        if not selected:
+            return
+        try:
+            insert_at = self._page_index + 1
+            count = self._doc.insert_pdf(insert_at, Path(selected))
+            self._page_index = insert_at
+            self._render_current_page()
+            self.statusBar().showMessage(t("status.page_inserted", count=count))
+        except Exception as exc:
+            QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
+
+    def _on_move_page(self, offset: int) -> None:
+        if not self._doc.is_open or not self._ensure_saved_before_page_op():
+            return
+        target = self._page_index + offset
+        if not (0 <= target < self._doc.page_count):
+            return
+        try:
+            self._doc.move_page(self._page_index, target)
+            self._page_index = target
+            self._render_current_page()
+            self.statusBar().showMessage(t("status.page_moved", page=target + 1))
+        except Exception as exc:
+            QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
+
+    def _on_delete_page(self) -> None:
+        if not self._doc.is_open or not self._ensure_saved_before_page_op():
+            return
+        reply = QMessageBox.question(
+            self,
+            t("menu.pages.delete"),
+            t("dialog.delete_page.confirm", page=self._page_index + 1),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._doc.delete_page(self._page_index)
+            self._page_index = min(self._page_index, max(0, self._doc.page_count - 1))
+            self._render_current_page()
+            self.statusBar().showMessage(t("status.page_deleted"))
+        except Exception as exc:
+            QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
+
+    def _on_extract_pages(self) -> None:
+        if not self._doc.is_open or self._doc.path is None or not self._ensure_saved_before_page_op():
+            return
+        spec, ok = QInputDialog.getText(
+            self,
+            t("dialog.extract.title"),
+            t("dialog.extract.prompt"),
+            text=f"{self._page_index + 1}",
+        )
+        if not ok or not spec.strip():
+            return
+        try:
+            indices = parse_page_range(spec, self._doc.page_count)
+        except Exception as exc:
+            QMessageBox.warning(self, t("error.title"), str(exc))
+            return
+
+        default_out = str(self._doc.path.with_name(f"{self._doc.path.stem}_pages.pdf"))
+        selected, _ = QFileDialog.getSaveFileName(
+            self,
+            t("dialog.extract.save_title"),
+            default_out,
+            t("dialog.open_pdf.filter"),
+        )
+        if not selected:
+            return
+        try:
+            out = self._doc.extract_pages(indices, Path(selected))
+            self.statusBar().showMessage(
+                t("status.pages_extracted", count=len(indices), filename=out.name)
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
+
+    def _on_apply_watermark(self) -> None:
+        if not self._doc.is_open or not self._ensure_saved_before_page_op():
+            return
+        text, ok = QInputDialog.getText(
+            self,
+            t("dialog.watermark.title"),
+            t("dialog.watermark.prompt"),
+        )
+        if not ok or not text.strip():
+            return
+        try:
+            self._doc.apply_watermark(text.strip())
+            self._render_current_page()
+            self.statusBar().showMessage(t("status.watermark_applied"))
+        except Exception as exc:
+            QMessageBox.critical(self, t("error.title"), t("error.generic", detail=str(exc)))
 
     def _on_crop_selected(self, crop: RectNorm) -> None:
         self._session.set_crop(self._page_index, crop)

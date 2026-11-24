@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from pdf_editor.core.document import PdfDocumentService
+from pdf_editor.core.document import PdfDocumentService, parse_page_range
 from pdf_editor.core.models import AnnotationItem, DocumentEditSession, RectNorm
 
 
@@ -167,4 +169,105 @@ def test_vector_only_crop_preserves_selectable_text(tmp_path: Path) -> None:
     assert abs(new_w - orig_w * 0.5) < 2.0
     assert abs(new_h - orig_h * 0.5) < 2.0
     assert "KEEP_VECTOR_TEXT" in (PdfReader(str(pdf_path)).pages[0].extract_text() or "")
+    doc.close()
+
+
+def test_freehand_image_and_select_move_delete_undo(tmp_path: Path) -> None:
+    pdf_path = _create_vector_text_pdf(tmp_path / "sign.pdf", ["Sign here"])
+    stamp_path = tmp_path / "stamp.png"
+    Image.new("RGBA", (120, 60), (0, 120, 255, 200)).save(stamp_path, "PNG")
+
+    doc = PdfDocumentService()
+    session = DocumentEditSession()
+    doc.open(pdf_path)
+
+    session.add_annotation(
+        0,
+        AnnotationItem(
+            kind="freehand",
+            points=((0.1, 0.2), (0.2, 0.25), (0.3, 0.22)),
+            color="#111827",
+            stroke_width=3.0,
+        ),
+    )
+    session.add_annotation(
+        0,
+        AnnotationItem(
+            kind="image",
+            x0=0.4,
+            y0=0.4,
+            x1=0.7,
+            y1=0.55,
+            image_path=str(stamp_path),
+        ),
+    )
+
+    assert session.page_edits(0).annotations[1].hit_test(0.55, 0.45)
+    session.move_annotation(0, 1, 0.1, 0.1)
+    assert abs(session.page_edits(0).annotations[1].x0 - 0.5) < 1e-6
+
+    session.undo()
+    assert abs(session.page_edits(0).annotations[1].x0 - 0.4) < 1e-6
+    session.redo()
+    assert abs(session.page_edits(0).annotations[1].x0 - 0.5) < 1e-6
+
+    session.delete_annotation(0, 0)
+    assert len(session.page_edits(0).annotations) == 1
+    session.undo()
+    assert len(session.page_edits(0).annotations) == 2
+
+    out = tmp_path / "signed_out.pdf"
+    doc.save(session, output_path=out)
+    assert out.exists()
+    doc.close()
+
+
+def test_page_management_rotate_insert_move_delete_extract_watermark(tmp_path: Path) -> None:
+    pdf_a = _create_vector_text_pdf(tmp_path / "a.pdf", ["PAGE_A1", "PAGE_A2"])
+    pdf_b = _create_vector_text_pdf(tmp_path / "b.pdf", ["PAGE_B1"])
+
+    doc = PdfDocumentService()
+    doc.open(pdf_a)
+    assert doc.page_count == 2
+
+    # Rotate page 0 by 90 degrees (width/height swap)
+    w0, h0 = doc.get_page_size_pt(0)
+    doc.rotate_page(0, 90)
+    w1, h1 = doc.get_page_size_pt(0)
+    assert abs(w1 - h0) < 2.0 and abs(h1 - w0) < 2.0
+
+    # Insert blank page after page 0
+    assert doc.insert_blank_page(1) == 1
+    assert doc.page_count == 3
+
+    # Insert/merge pdf_b after blank page
+    assert doc.insert_pdf(2, pdf_b) == 1
+    assert doc.page_count == 4
+
+    # Move inserted pdf_b page to front
+    doc.move_page(2, 0)
+    assert "PAGE_B1" in (PdfReader(str(pdf_a)).pages[0].extract_text() or "")
+
+    # Extract pages 1-2 to a new PDF
+    assert parse_page_range("1-2, 4", 4) == [0, 1, 3]
+    with pytest.raises(ValueError):
+        parse_page_range("0-2", 4)
+    extracted = doc.extract_pages([0, 1], tmp_path / "split.pdf")
+    assert len(PdfReader(str(extracted)).pages) == 2
+
+    # Delete a page
+    doc.delete_page(1)
+    assert doc.page_count == 3
+
+    # Watermark all pages
+    doc.apply_watermark("KOPIE")
+    assert doc.page_count == 3
+
+    # Deleting down to 1 page works, deleting last page raises
+    doc.delete_page(0)
+    doc.delete_page(0)
+    assert doc.page_count == 1
+    with pytest.raises(ValueError):
+        doc.delete_page(0)
+
     doc.close()

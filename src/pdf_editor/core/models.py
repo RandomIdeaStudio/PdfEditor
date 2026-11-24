@@ -7,7 +7,7 @@ across zoom levels and high-DPI save/redaction rendering.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Literal
 
@@ -25,7 +25,10 @@ AVAILABLE_FONTS: tuple[str, ...] = (
 
 class ToolKind(str, Enum):
     PAN = "pan"
+    SELECT = "select"
     CROP = "crop"
+    IMAGE = "image"
+    FREEHAND = "freehand"
     RECT = "rect"
     ELLIPSE = "ellipse"
     POLYGON = "polygon"
@@ -72,10 +75,12 @@ class AnnotationItem:
         "rect",
         "ellipse",
         "polygon",
+        "freehand",
         "line",
         "arrow",
         "highlight",
         "text",
+        "image",
         "redact_black",
         "redact_white",
     ]
@@ -84,6 +89,7 @@ class AnnotationItem:
     x1: float = 0.0
     y1: float = 0.0
     points: tuple[tuple[float, float], ...] = ()
+    image_path: str = ""
     color: str = "#D1242F"
     filled: bool = False
     fill_color: str = "#FEE2E2"
@@ -101,6 +107,32 @@ class AnnotationItem:
 
     def rect(self) -> RectNorm:
         return RectNorm(self.x0, self.y0, self.x1, self.y1).normalized()
+
+    def bounding_rect(self) -> RectNorm:
+        if self.points:
+            xs = [p[0] for p in self.points]
+            ys = [p[1] for p in self.points]
+            return RectNorm(min(xs), min(ys), max(xs), max(ys)).normalized()
+        return self.rect()
+
+    def hit_test(self, nx: float, ny: float, tol: float = 0.015) -> bool:
+        b = self.bounding_rect()
+        return (b.x0 - tol) <= nx <= (b.x1 + tol) and (b.y0 - tol) <= ny <= (b.y1 + tol)
+
+    def translated(self, dx: float, dy: float) -> AnnotationItem:
+        def clamp(v: float) -> float:
+            return max(0.0, min(1.0, v))
+
+        if self.points:
+            new_pts = tuple((clamp(px + dx), clamp(py + dy)) for px, py in self.points)
+            return replace(self, points=new_pts)
+        return replace(
+            self,
+            x0=clamp(self.x0 + dx),
+            y0=clamp(self.y0 + dy),
+            x1=clamp(self.x1 + dx),
+            y1=clamp(self.y1 + dy),
+        )
 
 
 @dataclass
@@ -122,8 +154,16 @@ class PageEdits:
 @dataclass(frozen=True)
 class _HistoryEntry:
     page_index: int
-    action: Literal["add_annotation", "set_crop", "clear_page"]
+    action: Literal[
+        "add_annotation",
+        "move_annotation",
+        "delete_annotation",
+        "set_crop",
+        "clear_page",
+    ]
     annotation: AnnotationItem | None = None
+    previous_annotation: AnnotationItem | None = None
+    annotation_index: int = -1
     previous_crop: RectNorm | None = None
     new_crop: RectNorm | None = None
     previous_annotations: tuple[AnnotationItem, ...] = ()
@@ -160,9 +200,50 @@ class DocumentEditSession:
         return any(edits.has_redactions for edits in self._pages.values())
 
     def add_annotation(self, page_index: int, item: AnnotationItem) -> None:
-        self.page_edits(page_index).annotations.append(item)
+        edits = self.page_edits(page_index)
+        edits.annotations.append(item)
         self._undo_stack.append(
-            _HistoryEntry(page_index=page_index, action="add_annotation", annotation=item)
+            _HistoryEntry(
+                page_index=page_index,
+                action="add_annotation",
+                annotation=item,
+                annotation_index=len(edits.annotations) - 1,
+            )
+        )
+        self._redo_stack.clear()
+        self._dirty = True
+
+    def move_annotation(self, page_index: int, annot_index: int, dx: float, dy: float) -> None:
+        edits = self.page_edits(page_index)
+        if not (0 <= annot_index < len(edits.annotations)):
+            return
+        prev = edits.annotations[annot_index]
+        moved = prev.translated(dx, dy)
+        edits.annotations[annot_index] = moved
+        self._undo_stack.append(
+            _HistoryEntry(
+                page_index=page_index,
+                action="move_annotation",
+                annotation=moved,
+                previous_annotation=prev,
+                annotation_index=annot_index,
+            )
+        )
+        self._redo_stack.clear()
+        self._dirty = True
+
+    def delete_annotation(self, page_index: int, annot_index: int) -> None:
+        edits = self.page_edits(page_index)
+        if not (0 <= annot_index < len(edits.annotations)):
+            return
+        removed = edits.annotations.pop(annot_index)
+        self._undo_stack.append(
+            _HistoryEntry(
+                page_index=page_index,
+                action="delete_annotation",
+                previous_annotation=removed,
+                annotation_index=annot_index,
+            )
         )
         self._redo_stack.clear()
         self._dirty = True
@@ -209,6 +290,15 @@ class DocumentEditSession:
         edits = self.page_edits(entry.page_index)
         if entry.action == "add_annotation" and edits.annotations:
             edits.annotations.pop()
+        elif (
+            entry.action == "move_annotation"
+            and entry.previous_annotation is not None
+            and 0 <= entry.annotation_index < len(edits.annotations)
+        ):
+            edits.annotations[entry.annotation_index] = entry.previous_annotation
+        elif entry.action == "delete_annotation" and entry.previous_annotation is not None:
+            idx = max(0, min(len(edits.annotations), entry.annotation_index))
+            edits.annotations.insert(idx, entry.previous_annotation)
         elif entry.action == "set_crop":
             edits.crop = entry.previous_crop
         elif entry.action == "clear_page":
@@ -225,6 +315,17 @@ class DocumentEditSession:
         edits = self.page_edits(entry.page_index)
         if entry.action == "add_annotation" and entry.annotation is not None:
             edits.annotations.append(entry.annotation)
+        elif (
+            entry.action == "move_annotation"
+            and entry.annotation is not None
+            and 0 <= entry.annotation_index < len(edits.annotations)
+        ):
+            edits.annotations[entry.annotation_index] = entry.annotation
+        elif (
+            entry.action == "delete_annotation"
+            and 0 <= entry.annotation_index < len(edits.annotations)
+        ):
+            edits.annotations.pop(entry.annotation_index)
         elif entry.action == "set_crop":
             edits.crop = entry.new_crop
         elif entry.action == "clear_page":

@@ -1,4 +1,4 @@
-"""PDF document rendering (pypdfium2) and editing/redaction save engine (pypdf + Pillow)."""
+"""PDF document rendering (pypdfium2), editing/redaction save engine, and page management (pypdf + Pillow)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont, ImageOps
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import RectangleObject
 
@@ -18,7 +18,6 @@ from .models import AnnotationItem, DocumentEditSession, PageEdits, RectNorm
 
 BAKE_DPI = 250.0
 
-# Mapping: font family -> (regular, bold, italic, bold_italic) Windows font filenames
 _FONT_FILES: dict[str, tuple[str, str, str, str]] = {
     "Segoe UI": ("segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf"),
     "Arial": ("arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"),
@@ -31,13 +30,59 @@ _FONT_FILES: dict[str, tuple[str, str, str, str]] = {
 }
 
 
+def parse_page_range(spec: str, total_pages: int) -> list[int]:
+    """Parse 1-based page specification like '1-3, 5' into sorted 0-based page indices."""
+    indices: list[int] = []
+    seen: set[int] = set()
+    cleaned = spec.strip()
+    if not cleaned:
+        raise ValueError(t("error.invalid_page_range", spec=spec, total=total_pages))
+
+    for part in cleaned.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if "-" in token:
+            bounds = token.split("-", 1)
+            try:
+                start = int(bounds[0].strip())
+                end = int(bounds[1].strip())
+            except ValueError as exc:
+                raise ValueError(
+                    t("error.invalid_page_range", spec=spec, total=total_pages)
+                ) from exc
+            if start < 1 or end > total_pages or start > end:
+                raise ValueError(t("error.invalid_page_range", spec=spec, total=total_pages))
+            for num in range(start, end + 1):
+                idx = num - 1
+                if idx not in seen:
+                    seen.add(idx)
+                    indices.append(idx)
+        else:
+            try:
+                num = int(token)
+            except ValueError as exc:
+                raise ValueError(
+                    t("error.invalid_page_range", spec=spec, total=total_pages)
+                ) from exc
+            if num < 1 or num > total_pages:
+                raise ValueError(t("error.invalid_page_range", spec=spec, total=total_pages))
+            idx = num - 1
+            if idx not in seen:
+                seen.add(idx)
+                indices.append(idx)
+
+    if not indices:
+        raise ValueError(t("error.invalid_page_range", spec=spec, total=total_pages))
+    return indices
+
+
 def _load_unicode_font(
     pixel_size: int,
     family: str = "Segoe UI",
     bold: bool = False,
     italic: bool = False,
 ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Load a Windows TrueType font matching family/bold/italic with full Czech support."""
     size = max(10, int(round(pixel_size)))
     fonts_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
 
@@ -99,7 +144,6 @@ def _wrap_text_to_width(
     font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     max_width: float,
 ) -> list[str]:
-    """Word-wrap multiline text to fit inside `max_width` pixels."""
     lines: list[str] = []
     safe_max = max(20.0, max_width)
     for paragraph in text.splitlines() or [""]:
@@ -126,7 +170,6 @@ def _draw_bounded_text(
     item: AnnotationItem,
     scale: float,
 ) -> None:
-    """Draw word-wrapped, styled text clipped inside the user's drawn bounding box."""
     img_w, img_h = rgba.size
     r = item.rect()
     box_x = int(round(r.x0 * img_w))
@@ -166,12 +209,59 @@ def _draw_bounded_text(
     rgba.alpha_composite(text_layer, dest=(box_x, box_y))
 
 
+def _draw_embedded_image(rgba: Image.Image, item: AnnotationItem) -> None:
+    if not item.image_path:
+        return
+    src = Path(item.image_path)
+    if not src.exists():
+        return
+    img_w, img_h = rgba.size
+    r = item.rect()
+    dst_x = int(round(r.x0 * img_w))
+    dst_y = int(round(r.y0 * img_h))
+    dst_w = max(8, int(round(r.width * img_w)))
+    dst_h = max(8, int(round(r.height * img_h)))
+
+    with Image.open(src) as raw_img:
+        stamp = ImageOps.exif_transpose(raw_img).convert("RGBA")
+        stamp = stamp.resize((dst_w, dst_h), Image.Resampling.LANCZOS)
+        rgba.alpha_composite(stamp, dest=(dst_x, dst_y))
+
+
+def _stamp_diagonal_watermark(
+    base_image: Image.Image,
+    text: str,
+    color: str = "#6B7280",
+    opacity: int = 55,
+) -> Image.Image:
+    rgba = base_image.convert("RGBA")
+    w, h = rgba.size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    font_px = max(36, int(round(min(w, h) * 0.11)))
+    font = _load_unicode_font(font_px, family="Arial", bold=True)
+    r, g, b = _parse_rgb(color)
+    alpha = max(15, min(200, opacity))
+
+    # Render watermark text centered on an oversized canvas and rotate 40 degrees
+    diag = int(math.hypot(w, h))
+    text_canvas = Image.new("RGBA", (diag, diag), (0, 0, 0, 0))
+    tdraw = ImageDraw.Draw(text_canvas)
+    bbox = tdraw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    tdraw.text(((diag - tw) // 2, (diag - th) // 2), text, fill=(r, g, b, alpha), font=font)
+    rotated = text_canvas.rotate(38, resample=Image.Resampling.BICUBIC)
+    crop_x = (diag - w) // 2
+    crop_y = (diag - h) // 2
+    overlay = rotated.crop((crop_x, crop_y, crop_x + w, crop_y + h))
+    return Image.alpha_composite(rgba, overlay).convert("RGB")
+
+
 def composite_annotations_on_image(
     base_image: Image.Image,
     edits: PageEdits,
     dpi: float = BAKE_DPI,
 ) -> Image.Image:
-    """Render all redactions, shapes, polygons, highlights, text, and crop onto a PIL RGB image."""
+    """Render all redactions, shapes, polygons, freehand, images, highlights, text, and crop."""
     rgba = base_image.convert("RGBA")
     img_w, img_h = rgba.size
     scale = dpi / 96.0
@@ -202,7 +292,7 @@ def composite_annotations_on_image(
             fill=fill,
         )
 
-    # Layer 3: geometric shapes, custom polygons, lines, arrows, and bounded rich text
+    # Layer 3: shapes, polygons, freehand, images, lines, arrows, and bounded rich text
     for item in edits.annotations:
         if item.kind in ("highlight", "redact_black", "redact_white"):
             continue
@@ -235,14 +325,13 @@ def composite_annotations_on_image(
             pts = [(px * img_w, py * img_h) for px, py in item.points]
             if fill_rgba is not None:
                 draw.polygon(pts, fill=fill_rgba)
-            closed = pts + [pts[0]]
-            draw.line(closed, fill=rgba_color, width=stroke, joint="curve")
+            draw.line(pts + [pts[0]], fill=rgba_color, width=stroke, joint="curve")
+        elif item.kind == "freehand" and len(item.points) >= 2:
+            pts = [(px * img_w, py * img_h) for px, py in item.points]
+            draw.line(pts, fill=rgba_color, width=stroke, joint="curve")
         elif item.kind == "line":
             draw.line(
-                [
-                    (item.x0 * img_w, item.y0 * img_h),
-                    (item.x1 * img_w, item.y1 * img_h),
-                ],
+                [(item.x0 * img_w, item.y0 * img_h), (item.x1 * img_w, item.y1 * img_h)],
                 fill=rgba_color,
                 width=stroke,
             )
@@ -256,13 +345,15 @@ def composite_annotations_on_image(
                 rgba_color,
                 stroke,
             )
+        elif item.kind == "image":
+            _draw_embedded_image(rgba, item)
+            draw = ImageDraw.Draw(rgba)
         elif item.kind == "text" and item.text:
             _draw_bounded_text(rgba, item, scale)
             draw = ImageDraw.Draw(rgba)
 
     rgb_out = rgba.convert("RGB")
 
-    # Apply physical crop if set
     if edits.crop is not None:
         c = edits.crop.normalized()
         left = int(round(c.x0 * img_w))
@@ -275,22 +366,13 @@ def composite_annotations_on_image(
 
 
 def _apply_vector_crop(page, crop: RectNorm) -> None:
-    """Apply a clean CropBox/MediaBox update on an unrasterized PDF page."""
     c = crop.normalized()
     box = page.mediabox
-    llx = float(box.left)
-    lly = float(box.bottom)
-    urx = float(box.right)
-    ury = float(box.top)
-    width = urx - llx
-    height = ury - lly
-
-    new_llx = llx + c.x0 * width
-    new_urx = llx + c.x1 * width
-    new_ury = ury - c.y0 * height
-    new_lly = ury - c.y1 * height
-
-    rect = RectangleObject((new_llx, new_lly, new_urx, new_ury))
+    llx, lly, urx, ury = float(box.left), float(box.bottom), float(box.right), float(box.top)
+    width, height = urx - llx, ury - lly
+    rect = RectangleObject(
+        (llx + c.x0 * width, ury - c.y1 * height, llx + c.x1 * width, ury - c.y0 * height)
+    )
     page.mediabox = rect
     page.cropbox = rect
 
@@ -308,7 +390,7 @@ def _image_to_single_page_pdf(img: Image.Image, target_w_pt: float, target_h_pt:
 
 
 class PdfDocumentService:
-    """Manages an open PDF for rendering and saving edits with true redaction."""
+    """Manages an open PDF for rendering, editing/redaction, and page manipulation."""
 
     def __init__(self) -> None:
         self._path: Path | None = None
@@ -381,6 +463,40 @@ class PdfDocumentService:
         finally:
             page.close()
 
+    def _atomic_write_and_reopen(self, writer: PdfWriter, dst: Path) -> Path:
+        assert self._path is not None
+        src = self._path
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=".pdfeditor_save_", suffix=".tmp", dir=str(dst.parent)
+        )
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+
+        overwriting_open_file = dst == src
+        try:
+            with tmp_path.open("wb") as handle:
+                writer.write(handle)
+            if overwriting_open_file:
+                self.close()
+            tmp_path.replace(dst)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            if overwriting_open_file and not self.is_open:
+                self.open(src)
+            raise
+
+        self.open(dst)
+        return dst
+
+    def _open_reader(self) -> PdfReader:
+        if not self.is_open or self._path is None:
+            raise RuntimeError("No PDF document is open.")
+        reader = PdfReader(str(self._path))
+        if reader.is_encrypted:
+            reader.decrypt("")
+        return reader
+
     def save(
         self,
         session: DocumentEditSession,
@@ -389,8 +505,7 @@ class PdfDocumentService:
         if not self.is_open or self._path is None:
             raise RuntimeError("No PDF document is open.")
 
-        src = self._path
-        dst = Path(output_path).resolve() if output_path else src
+        dst = Path(output_path).resolve() if output_path else self._path
         edited_pages = session.all_edited_pages()
 
         baked_pages: dict[int, tuple[Image.Image, float, float]] = {}
@@ -407,44 +522,130 @@ class PdfDocumentService:
                     target_w_pt, target_h_pt = orig_w_pt, orig_h_pt
                 baked_pages[page_idx] = (baked_img, target_w_pt, target_h_pt)
 
-        reader = PdfReader(str(src))
-        if reader.is_encrypted:
-            reader.decrypt("")
-
+        reader = self._open_reader()
         writer = PdfWriter()
         for page_idx in range(len(reader.pages)):
             if page_idx in baked_pages:
                 baked_img, target_w_pt, target_h_pt = baked_pages[page_idx]
-                new_page = _image_to_single_page_pdf(baked_img, target_w_pt, target_h_pt)
-                writer.add_page(new_page)
+                writer.add_page(_image_to_single_page_pdf(baked_img, target_w_pt, target_h_pt))
             else:
                 writer.add_page(reader.pages[page_idx])
                 edits = edited_pages.get(page_idx)
                 if edits is not None and edits.crop is not None:
                     _apply_vector_crop(writer.pages[page_idx], edits.crop)
 
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=".pdfeditor_save_", suffix=".tmp", dir=str(dst.parent)
-        )
-        os.close(fd)
-        tmp_path = Path(tmp_name)
-
-        overwriting_open_file = dst == src
-        try:
-            with tmp_path.open("wb") as handle:
-                writer.write(handle)
-
-            if overwriting_open_file:
-                self.close()
-
-            tmp_path.replace(dst)
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            if overwriting_open_file and not self.is_open:
-                self.open(src)
-            raise
-
-        self.open(dst)
+        saved = self._atomic_write_and_reopen(writer, dst)
         session.mark_saved()
+        return saved
+
+    # ------------------------------------------------------------------ Page management
+
+    def rotate_page(self, page_index: int, degrees: int) -> None:
+        reader = self._open_reader()
+        writer = PdfWriter()
+        for idx, page in enumerate(reader.pages):
+            if idx == page_index:
+                page.rotate(degrees)
+            writer.add_page(page)
+        assert self._path is not None
+        self._atomic_write_and_reopen(writer, self._path)
+
+    def delete_page(self, page_index: int) -> None:
+        reader = self._open_reader()
+        if len(reader.pages) <= 1:
+            raise ValueError(t("error.cannot_delete_last_page"))
+        writer = PdfWriter()
+        for idx, page in enumerate(reader.pages):
+            if idx != page_index:
+                writer.add_page(page)
+        assert self._path is not None
+        self._atomic_write_and_reopen(writer, self._path)
+
+    def move_page(self, from_index: int, to_index: int) -> None:
+        reader = self._open_reader()
+        pages = list(reader.pages)
+        if not (0 <= from_index < len(pages)) or not (0 <= to_index < len(pages)):
+            return
+        moved = pages.pop(from_index)
+        pages.insert(to_index, moved)
+        writer = PdfWriter()
+        for page in pages:
+            writer.add_page(page)
+        assert self._path is not None
+        self._atomic_write_and_reopen(writer, self._path)
+
+    def insert_blank_page(self, insert_at: int) -> int:
+        reader = self._open_reader()
+        pages = list(reader.pages)
+        ref_idx = max(0, min(len(pages) - 1, insert_at - 1))
+        ref_box = pages[ref_idx].mediabox
+        w_pt = float(ref_box.width) if pages else 595.0
+        h_pt = float(ref_box.height) if pages else 842.0
+
+        writer = PdfWriter()
+        for page in pages[:insert_at]:
+            writer.add_page(page)
+        writer.add_blank_page(width=w_pt, height=h_pt)
+        for page in pages[insert_at:]:
+            writer.add_page(page)
+
+        assert self._path is not None
+        self._atomic_write_and_reopen(writer, self._path)
+        return 1
+
+    def insert_pdf(self, insert_at: int, source_pdf: str | Path) -> int:
+        src_path = Path(source_pdf).resolve()
+        if not src_path.exists():
+            raise FileNotFoundError(t("error.file_not_found", path=str(src_path)))
+        other = PdfReader(str(src_path))
+        if other.is_encrypted and other.decrypt("") == 0:
+            raise PermissionError(t("error.encrypted_pdf"))
+
+        reader = self._open_reader()
+        pages = list(reader.pages)
+        inserted_pages = list(other.pages)
+
+        writer = PdfWriter()
+        for page in pages[:insert_at]:
+            writer.add_page(page)
+        for page in inserted_pages:
+            writer.add_page(page)
+        for page in pages[insert_at:]:
+            writer.add_page(page)
+
+        assert self._path is not None
+        self._atomic_write_and_reopen(writer, self._path)
+        return len(inserted_pages)
+
+    def extract_pages(self, page_indices: list[int], output_path: str | Path) -> Path:
+        reader = self._open_reader()
+        writer = PdfWriter()
+        for idx in page_indices:
+            writer.add_page(reader.pages[idx])
+
+        dst = Path(output_path).resolve()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with dst.open("wb") as handle:
+            writer.write(handle)
         return dst
+
+    def apply_watermark(
+        self,
+        text: str,
+        color: str = "#6B7280",
+        opacity: int = 55,
+    ) -> None:
+        if not self.is_open or self._path is None:
+            raise RuntimeError("No PDF document is open.")
+        rendered_pages: list[tuple[Image.Image, float, float]] = []
+        for idx in range(self._page_count):
+            w_pt, h_pt = self.get_page_size_pt(idx)
+            img = self.render_page(idx, dpi=200.0)
+            stamped = _stamp_diagonal_watermark(img, text=text, color=color, opacity=opacity)
+            rendered_pages.append((stamped, w_pt, h_pt))
+
+        writer = PdfWriter()
+        for stamped, w_pt, h_pt in rendered_pages:
+            writer.add_page(_image_to_single_page_pdf(stamped, w_pt, h_pt))
+
+        self._atomic_write_and_reopen(writer, self._path)

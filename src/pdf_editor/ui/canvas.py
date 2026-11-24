@@ -1,4 +1,4 @@
-"""Interactive PySide6 PDF page canvas with zoom, shapes, fill, custom polygons, and text boxes."""
+"""Interactive PySide6 PDF page canvas: pan, select/move/delete, freehand pen, shapes, polygons, images, text, crop, redaction."""
 
 from __future__ import annotations
 
@@ -13,12 +13,13 @@ from PySide6.QtGui import (
     QImage,
     QKeyEvent,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
     QPolygonF,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QInputDialog, QWidget
+from PySide6.QtWidgets import QFileDialog, QInputDialog, QWidget
 
 from ..core.i18n import t
 from ..core.models import AnnotationItem, PageEdits, RectNorm, ToolKind
@@ -32,9 +33,11 @@ def pil_to_qpixmap(img: Image.Image) -> QPixmap:
 
 
 class PdfCanvasWidget(QWidget):
-    """Displays a rendered PDF page and captures interactive drawing, polygon, text box, and crop edits."""
+    """Displays a rendered PDF page and captures interactive drawing, selection, pan, and crop edits."""
 
     annotation_created = Signal(object)  # AnnotationItem
+    annotation_moved = Signal(int, float, float)  # index, dx_norm, dy_norm
+    annotation_deleted = Signal(int)  # index
     crop_selected = Signal(object)  # RectNorm
     zoom_requested = Signal(float)  # delta factor
     pan_requested = Signal(int, int)  # dx, dy scroll deltas in pixels
@@ -62,7 +65,14 @@ class PdfCanvasWidget(QWidget):
         self._start_norm: tuple[float, float] | None = None
         self._curr_norm: tuple[float, float] | None = None
         self._poly_points: list[tuple[float, float]] = []
+        self._freehand_points: list[tuple[float, float]] = []
         self._hover_norm: tuple[float, float] | None = None
+
+        self._selected_index: int | None = None
+        self._moving_selected: bool = False
+        self._move_origin_norm: tuple[float, float] | None = None
+        self._move_delta_norm: tuple[float, float] = (0.0, 0.0)
+        self._image_cache: dict[str, QPixmap] = {}
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -73,6 +83,8 @@ class PdfCanvasWidget(QWidget):
         self._edits = edits
         self._zoom = zoom
         self._poly_points.clear()
+        self._freehand_points.clear()
+        self._selected_index = None
         self.setFixedSize(self._pixmap.size())
         self.update()
 
@@ -80,19 +92,29 @@ class PdfCanvasWidget(QWidget):
         self._pixmap = None
         self._edits = PageEdits()
         self._poly_points.clear()
+        self._freehand_points.clear()
+        self._selected_index = None
         self.update()
 
     def set_edits(self, edits: PageEdits) -> None:
         self._edits = edits
+        if self._selected_index is not None and self._selected_index >= len(edits.annotations):
+            self._selected_index = None
         self.update()
 
     def set_tool(self, tool: ToolKind) -> None:
         if tool != self._tool:
             self._poly_points.clear()
+            self._freehand_points.clear()
             self._dragging = False
+            self._moving_selected = False
+            if tool != ToolKind.SELECT:
+                self._selected_index = None
         self._tool = tool
         if tool == ToolKind.PAN:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif tool == ToolKind.SELECT:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
         else:
             self.setCursor(Qt.CursorShape.CrossCursor)
         self.update()
@@ -131,6 +153,15 @@ class PdfCanvasWidget(QWidget):
         ny = max(0.0, min(1.0, pos.y() / h))
         return nx, ny
 
+    def _get_cached_image(self, path: str) -> QPixmap | None:
+        if not path:
+            return None
+        if path not in self._image_cache:
+            pix = QPixmap(path)
+            if not pix.isNull():
+                self._image_cache[path] = pix
+        return self._image_cache.get(path)
+
     def _finish_polygon(self) -> None:
         if len(self._poly_points) >= 3:
             item = AnnotationItem(
@@ -148,6 +179,19 @@ class PdfCanvasWidget(QWidget):
         self.update()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._tool == ToolKind.SELECT and self._selected_index is not None:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                idx = self._selected_index
+                self._selected_index = None
+                self.annotation_deleted.emit(idx)
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Escape:
+                self._selected_index = None
+                self.update()
+                event.accept()
+                return
+
         if self._tool == ToolKind.POLYGON and self._poly_points:
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._finish_polygon()
@@ -184,7 +228,6 @@ class PdfCanvasWidget(QWidget):
 
         self.setFocus()
 
-        # Right-click finishes an in-progress custom polygon
         if event.button() == Qt.MouseButton.RightButton and self._tool == ToolKind.POLYGON:
             if len(self._poly_points) >= 3:
                 self._finish_polygon()
@@ -208,8 +251,23 @@ class PdfCanvasWidget(QWidget):
 
         nx, ny = self._to_norm(event.position())
 
+        # Select / move existing annotation
+        if self._tool == ToolKind.SELECT:
+            hit_idx: int | None = None
+            for idx in range(len(self._edits.annotations) - 1, -1, -1):
+                if self._edits.annotations[idx].hit_test(nx, ny):
+                    hit_idx = idx
+                    break
+            self._selected_index = hit_idx
+            if hit_idx is not None:
+                self._moving_selected = True
+                self._move_origin_norm = (nx, ny)
+                self._move_delta_norm = (0.0, 0.0)
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+            self.update()
+            return
+
         if self._tool == ToolKind.POLYGON:
-            # Clicking close to the starting point closes the polygon when >= 3 points exist
             if len(self._poly_points) >= 3:
                 fx, fy = self._poly_points[0]
                 dist_px = math.hypot((nx - fx) * self.width(), (ny - fy) * self.height())
@@ -221,7 +279,12 @@ class PdfCanvasWidget(QWidget):
             self.update()
             return
 
-        # All other tools (including TEXT box, CROP, shapes, redactions) start a drag
+        if self._tool == ToolKind.FREEHAND:
+            self._freehand_points = [(nx, ny)]
+            self._dragging = True
+            self.update()
+            return
+
         self._dragging = True
         self._start_norm = (nx, ny)
         self._curr_norm = (nx, ny)
@@ -230,6 +293,7 @@ class PdfCanvasWidget(QWidget):
     def mouseMoveEvent(self, event) -> None:
         if self._pixmap is None:
             return super().mouseMoveEvent(event)
+
         if self._panning and self._last_pan_global is not None:
             curr_global = event.globalPosition()
             dx = int(round(curr_global.x() - self._last_pan_global.x()))
@@ -239,12 +303,28 @@ class PdfCanvasWidget(QWidget):
                 self.pan_requested.emit(dx, dy)
             event.accept()
             return
+
         pos = self._to_norm(event.position())
         self._hover_norm = pos
-        if self._dragging:
-            self._curr_norm = pos
+
+        if self._moving_selected and self._move_origin_norm is not None:
+            self._move_delta_norm = (
+                pos[0] - self._move_origin_norm[0],
+                pos[1] - self._move_origin_norm[1],
+            )
             self.update()
             return
+
+        if self._dragging:
+            if self._tool == ToolKind.FREEHAND:
+                last = self._freehand_points[-1]
+                if math.hypot((pos[0] - last[0]) * self.width(), (pos[1] - last[1]) * self.height()) >= 2.5:
+                    self._freehand_points.append(pos)
+            else:
+                self._curr_norm = pos
+            self.update()
+            return
+
         if self._tool == ToolKind.POLYGON and self._poly_points:
             self.update()
             return
@@ -257,18 +337,47 @@ class PdfCanvasWidget(QWidget):
         ):
             self._panning = False
             self._last_pan_global = None
-            self.setCursor(
-                Qt.CursorShape.OpenHandCursor
-                if self._tool == ToolKind.PAN
-                else Qt.CursorShape.CrossCursor
-            )
+            if self._tool == ToolKind.PAN:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            elif self._tool == ToolKind.SELECT:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            else:
+                self.setCursor(Qt.CursorShape.CrossCursor)
             event.accept()
+            return
+
+        if self._moving_selected and event.button() == Qt.MouseButton.LeftButton:
+            self._moving_selected = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            dx, dy = self._move_delta_norm
+            self._move_delta_norm = (0.0, 0.0)
+            self._move_origin_norm = None
+            if (
+                self._selected_index is not None
+                and math.hypot(dx * self.width(), dy * self.height()) >= 2.0
+            ):
+                self.annotation_moved.emit(self._selected_index, dx, dy)
+            self.update()
             return
 
         if not self._dragging or event.button() != Qt.MouseButton.LeftButton:
             return super().mouseReleaseEvent(event)
 
         self._dragging = False
+        if self._tool == ToolKind.FREEHAND:
+            pts = tuple(self._freehand_points)
+            self._freehand_points.clear()
+            if len(pts) >= 2:
+                item = AnnotationItem(
+                    kind="freehand",
+                    points=pts,
+                    color=self._color,
+                    stroke_width=self._stroke_width,
+                )
+                self.annotation_created.emit(item)
+            self.update()
+            return
+
         start = self._start_norm
         end = self._to_norm(event.position())
         self._start_norm = None
@@ -288,6 +397,24 @@ class PdfCanvasWidget(QWidget):
             rect = RectNorm(x0, y0, x1, y1).normalized()
             if rect.width >= 0.03 and rect.height >= 0.03:
                 self.crop_selected.emit(rect)
+        elif self._tool == ToolKind.IMAGE:
+            rect = RectNorm(x0, y0, x1, y1).normalized()
+            selected, _ = QFileDialog.getOpenFileName(
+                self,
+                t("dialog.insert_image.title"),
+                "",
+                t("dialog.insert_image.filter"),
+            )
+            if selected:
+                item = AnnotationItem(
+                    kind="image",
+                    x0=rect.x0,
+                    y0=rect.y0,
+                    x1=rect.x1,
+                    y1=rect.y1,
+                    image_path=selected,
+                )
+                self.annotation_created.emit(item)
         elif self._tool == ToolKind.TEXT:
             rect = RectNorm(x0, y0, x1, y1).normalized()
             text, ok = QInputDialog.getMultiLineText(
@@ -334,6 +461,8 @@ class PdfCanvasWidget(QWidget):
             self.annotation_created.emit(item)
         self.update()
 
+    # ------------------------------------------------------------------ Painting
+
     def _draw_arrow(
         self,
         painter: QPainter,
@@ -367,6 +496,31 @@ class PdfCanvasWidget(QWidget):
         )
         painter.drawPolygon(poly)
 
+    def _draw_freehand_points(
+        self,
+        painter: QPainter,
+        points: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+        hex_color: str,
+        stroke_width: float,
+    ) -> None:
+        if len(points) < 2:
+            return
+        w = float(self.width())
+        h = float(self.height())
+        path = QPainterPath(QPointF(points[0][0] * w, points[0][1] * h))
+        for px, py in points[1:]:
+            path.lineTo(QPointF(px * w, py * h))
+        pen = QPen(
+            QColor(hex_color),
+            max(1.0, stroke_width * self._zoom),
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+
     def _draw_annotation(self, painter: QPainter, item: AnnotationItem) -> None:
         w = float(self.width())
         h = float(self.height())
@@ -383,18 +537,28 @@ class PdfCanvasWidget(QWidget):
 
         if item.kind == "redact_black":
             r = item.rect()
-            rect_f = QRectF(r.x0 * w, r.y0 * h, r.width * w, r.height * h)
             painter.setBrush(QBrush(QColor(0, 0, 0, 245)))
             painter.setPen(QPen(QColor(220, 38, 38), 1.5, Qt.PenStyle.DashLine))
-            painter.drawRect(rect_f)
+            painter.drawRect(QRectF(r.x0 * w, r.y0 * h, r.width * w, r.height * h))
             return
 
         if item.kind == "redact_white":
             r = item.rect()
-            rect_f = QRectF(r.x0 * w, r.y0 * h, r.width * w, r.height * h)
             painter.setBrush(QBrush(QColor(255, 255, 255, 245)))
             painter.setPen(QPen(QColor(37, 99, 235), 1.5, Qt.PenStyle.DashLine))
-            painter.drawRect(rect_f)
+            painter.drawRect(QRectF(r.x0 * w, r.y0 * h, r.width * w, r.height * h))
+            return
+
+        if item.kind == "image":
+            r = item.rect()
+            rect_f = QRectF(r.x0 * w, r.y0 * h, r.width * w, r.height * h)
+            pix = self._get_cached_image(item.image_path)
+            if pix is not None:
+                painter.drawPixmap(rect_f.toRect(), pix)
+            return
+
+        if item.kind == "freehand":
+            self._draw_freehand_points(painter, item.points, item.color, item.stroke_width)
             return
 
         color = QColor(item.color)
@@ -421,7 +585,6 @@ class PdfCanvasWidget(QWidget):
             box_h = r.height * h if r.height > 0.005 else max(50.0, h - r.y0 * h)
             rect_f = QRectF(r.x0 * w, r.y0 * h, box_w, box_h)
 
-            # Subtle dashed guide for text box in editor preview
             painter.save()
             painter.setPen(QPen(QColor(148, 163, 184, 150), 1.0, Qt.PenStyle.DotLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -468,10 +631,11 @@ class PdfCanvasWidget(QWidget):
         stroke = max(1.0, self._stroke_width * self._zoom)
 
         pts = [QPointF(px * w, py * h) for px, py in self._poly_points]
-        if self._hover_norm is not None:
-            pts_with_hover = pts + [QPointF(self._hover_norm[0] * w, self._hover_norm[1] * h)]
-        else:
-            pts_with_hover = pts
+        pts_with_hover = (
+            pts + [QPointF(self._hover_norm[0] * w, self._hover_norm[1] * h)]
+            if self._hover_norm is not None
+            else pts
+        )
 
         if self._filled and len(pts_with_hover) >= 3:
             fill_c = QColor(self._fill_color)
@@ -485,7 +649,6 @@ class PdfCanvasWidget(QWidget):
         for idx in range(len(pts_with_hover) - 1):
             painter.drawLine(pts_with_hover[idx], pts_with_hover[idx + 1])
 
-        # Draw vertex handles (first vertex highlighted larger so user sees close target)
         for idx, pt in enumerate(pts):
             radius = 5.5 if idx == 0 and len(pts) >= 3 else 3.5
             painter.setBrush(QBrush(QColor("#16A34A") if idx == 0 and len(pts) >= 3 else color))
@@ -502,30 +665,51 @@ class PdfCanvasWidget(QWidget):
 
         painter.drawPixmap(0, 0, self._pixmap)
 
-        for item in self._edits.annotations:
-            self._draw_annotation(painter, item)
+        for idx, item in enumerate(self._edits.annotations):
+            drawn_item = item
+            if idx == self._selected_index and self._moving_selected:
+                drawn_item = item.translated(self._move_delta_norm[0], self._move_delta_norm[1])
+            self._draw_annotation(painter, drawn_item)
+
+            if idx == self._selected_index:
+                b = drawn_item.bounding_rect()
+                sel_rect = QRectF(
+                    b.x0 * self.width() - 4,
+                    b.y0 * self.height() - 4,
+                    b.width * self.width() + 8,
+                    b.height * self.height() + 8,
+                )
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(QColor(37, 99, 235), 2.0, Qt.PenStyle.DashLine))
+                painter.drawRect(sel_rect)
 
         if self._edits.crop is not None:
             self._draw_crop_overlay(painter, self._edits.crop)
 
-        # In-progress polygon preview
         if self._tool == ToolKind.POLYGON and self._poly_points:
             self._draw_polygon_preview(painter)
 
-        # Live drag preview
+        if self._tool == ToolKind.FREEHAND and self._freehand_points:
+            self._draw_freehand_points(painter, self._freehand_points, self._color, self._stroke_width)
+
         if self._dragging and self._start_norm is not None and self._curr_norm is not None:
             x0, y0 = self._start_norm
             x1, y1 = self._curr_norm
             if self._tool == ToolKind.CROP:
                 self._draw_crop_overlay(painter, RectNorm(x0, y0, x1, y1))
-            elif self._tool == ToolKind.TEXT:
+            elif self._tool in (ToolKind.TEXT, ToolKind.IMAGE):
                 r = RectNorm(x0, y0, x1, y1).normalized()
                 painter.setBrush(QBrush(QColor(59, 130, 246, 28)))
                 painter.setPen(QPen(QColor(37, 99, 235), 1.8, Qt.PenStyle.DashLine))
                 painter.drawRect(
-                    QRectF(r.x0 * self.width(), r.y0 * self.height(), r.width * self.width(), r.height * self.height())
+                    QRectF(
+                        r.x0 * self.width(),
+                        r.y0 * self.height(),
+                        r.width * self.width(),
+                        r.height * self.height(),
+                    )
                 )
-            elif self._tool not in (ToolKind.PAN, ToolKind.POLYGON):
+            elif self._tool not in (ToolKind.PAN, ToolKind.SELECT, ToolKind.POLYGON, ToolKind.FREEHAND):
                 preview = AnnotationItem(
                     kind=self._tool.value,  # type: ignore[arg-type]
                     x0=x0,
