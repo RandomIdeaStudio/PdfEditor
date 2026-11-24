@@ -1,4 +1,4 @@
-"""Main PySide6 window for PdfEditor."""
+"""Main PySide6 window for PdfEditor with clean top menu bar and left editing sidebar."""
 
 from __future__ import annotations
 
@@ -14,8 +14,14 @@ from PySide6.QtGui import (
     QKeySequence,
 )
 from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
     QColorDialog,
+    QComboBox,
     QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -24,7 +30,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QStackedWidget,
-    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -33,7 +38,13 @@ from ..core.compressor import compress_pdf, format_size
 from ..core.converter import CONVERTIBLE_EXTENSIONS, convert_to_pdf, is_convertible
 from ..core.document import PdfDocumentService
 from ..core.i18n import get_i18n, t
-from ..core.models import AnnotationItem, DocumentEditSession, RectNorm, ToolKind
+from ..core.models import (
+    AVAILABLE_FONTS,
+    AnnotationItem,
+    DocumentEditSession,
+    RectNorm,
+    ToolKind,
+)
 from ..core.presets import PRESETS
 from . import load_app_icon
 from .about_dialog import AboutDialog
@@ -42,7 +53,7 @@ from .setup_dialog import SetupDialog
 
 
 class MainWindow(QMainWindow):
-    """Primary PDF editor window with integrated downsizing and file conversion."""
+    """Primary PDF editor window: clean menu bar on top, all editing controls in left sidebar."""
 
     def __init__(self, initial_file: Path | None = None) -> None:
         super().__init__()
@@ -51,78 +62,21 @@ class MainWindow(QMainWindow):
         self._page_index: int = 0
         self._zoom: float = 1.0
         self._active_color: str = "#D1242F"
+        self._fill_color: str = "#FEE2E2"
 
         self.setWindowIcon(load_app_icon())
-        self.resize(1180, 820)
+        self.resize(1240, 840)
         self.setAcceptDrops(True)
 
-        self._build_ui()
         self._build_menus()
-        self._build_toolbars()
+        self._build_ui()
         self._retranslate_ui()
         self._update_controls_state()
 
         if initial_file is not None:
             self.open_path(initial_file)
 
-    # ------------------------------------------------------------------ UI setup
-
-    def _build_ui(self) -> None:
-        self._stack = QStackedWidget()
-        self.setCentralWidget(self._stack)
-
-        # Page 0: Empty welcome state
-        welcome = QWidget()
-        welcome_layout = QVBoxLayout(welcome)
-        welcome_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        welcome_layout.setSpacing(14)
-
-        self._empty_headline = QLabel()
-        self._empty_headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_headline.setStyleSheet("font-size: 22px; font-weight: 700; color: #1F2328;")
-        welcome_layout.addWidget(self._empty_headline)
-
-        self._empty_subtext = QLabel()
-        self._empty_subtext.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_subtext.setStyleSheet("font-size: 13px; color: #59636E;")
-        welcome_layout.addWidget(self._empty_subtext)
-
-        btn_row = QHBoxLayout()
-        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btn_row.setSpacing(10)
-
-        self._empty_open_btn = QPushButton()
-        self._empty_open_btn.setStyleSheet(
-            "QPushButton { background: #D1242F; color: #FFFFFF; font-weight: 600; "
-            "padding: 10px 20px; border-radius: 6px; border: none; }"
-            "QPushButton:hover { background: #A40E26; }"
-        )
-        self._empty_open_btn.clicked.connect(self._on_open_pdf)
-        btn_row.addWidget(self._empty_open_btn)
-
-        self._empty_convert_btn = QPushButton()
-        self._empty_convert_btn.setStyleSheet("QPushButton { padding: 10px 18px; }")
-        self._empty_convert_btn.clicked.connect(self._on_convert_file)
-        btn_row.addWidget(self._empty_convert_btn)
-
-        self._empty_setup_btn = QPushButton()
-        self._empty_setup_btn.setStyleSheet("QPushButton { padding: 10px 18px; }")
-        self._empty_setup_btn.clicked.connect(self._on_open_setup)
-        btn_row.addWidget(self._empty_setup_btn)
-
-        welcome_layout.addLayout(btn_row)
-        self._stack.addWidget(welcome)
-
-        # Page 1: Scrollable PDF canvas
-        self._scroll = QScrollArea()
-        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._scroll.setStyleSheet("QScrollArea { background: #E5E7EB; border: none; }")
-        self._canvas = PdfCanvasWidget()
-        self._canvas.annotation_created.connect(self._on_annotation_created)
-        self._canvas.crop_selected.connect(self._on_crop_selected)
-        self._canvas.zoom_requested.connect(self._on_zoom_factor)
-        self._scroll.setWidget(self._canvas)
-        self._stack.addWidget(self._scroll)
+    # ------------------------------------------------------------------ Menu bar (top only)
 
     def _build_menus(self) -> None:
         mb = self.menuBar()
@@ -212,21 +166,46 @@ class MainWindow(QMainWindow):
         self._act_about.triggered.connect(self._on_about)
         self._menu_help.addAction(self._act_about)
 
-    def _build_toolbars(self) -> None:
-        # Drawing tools toolbar
-        self._tools_bar = QToolBar()
-        self._tools_bar.setMovable(False)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._tools_bar)
+    # ------------------------------------------------------------------ Main layout (Left sidebar + Canvas)
 
-        self._tool_group = QActionGroup(self)
-        self._tool_group.setExclusive(True)
-        self._tool_actions: dict[ToolKind, QAction] = {}
+    def _build_ui(self) -> None:
+        root_widget = QWidget()
+        root_layout = QHBoxLayout(root_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+        self.setCentralWidget(root_widget)
+
+        # Left scrollable editing sidebar
+        sidebar_scroll = QScrollArea()
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sidebar_scroll.setFixedWidth(268)
+        sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        sidebar_scroll.setStyleSheet(
+            "QScrollArea { background: #F6F8FA; border-right: 1px solid #D0D7DE; }"
+        )
+
+        sidebar = QWidget()
+        sidebar.setStyleSheet("QWidget { background: #F6F8FA; }")
+        side_layout = QVBoxLayout(sidebar)
+        side_layout.setContentsMargins(10, 10, 10, 12)
+        side_layout.setSpacing(10)
+
+        # Section 1: Tools
+        self._grp_tools = QGroupBox()
+        tools_grid = QGridLayout(self._grp_tools)
+        tools_grid.setSpacing(6)
+
+        self._tool_btn_group = QButtonGroup(self)
+        self._tool_btn_group.setExclusive(True)
+        self._tool_buttons: dict[ToolKind, QPushButton] = {}
 
         tool_order = [
             ToolKind.PAN,
             ToolKind.CROP,
             ToolKind.RECT,
             ToolKind.ELLIPSE,
+            ToolKind.POLYGON,
             ToolKind.LINE,
             ToolKind.ARROW,
             ToolKind.HIGHLIGHT,
@@ -234,78 +213,205 @@ class MainWindow(QMainWindow):
             ToolKind.REDACT_BLACK,
             ToolKind.REDACT_WHITE,
         ]
-        for kind in tool_order:
-            act = QAction(self)
-            act.setCheckable(True)
-            act.triggered.connect(lambda _checked=False, k=kind: self._select_tool(k))
-            self._tool_group.addAction(act)
-            self._tools_bar.addAction(act)
-            self._tool_actions[kind] = act
-            if kind in (ToolKind.CROP, ToolKind.TEXT):
-                self._tools_bar.addSeparator()
+        tool_style = (
+            "QPushButton { background: #FFFFFF; color: #1F2328; border: 1px solid #D0D7DE; "
+            "border-radius: 5px; padding: 6px 6px; font-size: 12px; text-align: left; }"
+            "QPushButton:hover { background: #EEF2F6; }"
+            "QPushButton:checked { background: #1F2328; color: #FFFFFF; border-color: #1F2328; font-weight: 600; }"
+        )
+        for idx, kind in enumerate(tool_order):
+            btn = QPushButton()
+            btn.setCheckable(True)
+            btn.setStyleSheet(tool_style)
+            btn.clicked.connect(lambda _checked=False, k=kind: self._select_tool(k))
+            self._tool_btn_group.addButton(btn)
+            self._tool_buttons[kind] = btn
+            row, col = divmod(idx, 2)
+            tools_grid.addWidget(btn, row, col)
 
-        self._tool_actions[ToolKind.PAN].setChecked(True)
+        self._tool_buttons[ToolKind.PAN].setChecked(True)
+        side_layout.addWidget(self._grp_tools)
 
-        # Properties & navigation toolbar
-        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
-        self._props_bar = QToolBar()
-        self._props_bar.setMovable(False)
-        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._props_bar)
+        # Section 2: Line & Shape properties
+        self._grp_shape = QGroupBox()
+        shape_layout = QVBoxLayout(self._grp_shape)
+        shape_layout.setSpacing(8)
 
         self._color_btn = QPushButton()
         self._color_btn.clicked.connect(self._on_pick_color)
-        self._update_color_button_style()
-        self._props_bar.addWidget(self._color_btn)
+        shape_layout.addWidget(self._color_btn)
 
-        self._props_bar.addSeparator()
-
+        width_row = QHBoxLayout()
         self._stroke_lbl = QLabel()
-        self._stroke_lbl.setContentsMargins(6, 0, 4, 0)
-        self._props_bar.addWidget(self._stroke_lbl)
-
         self._stroke_spin = QSpinBox()
         self._stroke_spin.setRange(1, 24)
         self._stroke_spin.setValue(3)
         self._stroke_spin.valueChanged.connect(lambda v: self._canvas.set_stroke_width(float(v)))
-        self._props_bar.addWidget(self._stroke_spin)
+        width_row.addWidget(self._stroke_lbl)
+        width_row.addWidget(self._stroke_spin)
+        shape_layout.addLayout(width_row)
 
-        self._font_lbl = QLabel()
-        self._font_lbl.setContentsMargins(10, 0, 4, 0)
-        self._props_bar.addWidget(self._font_lbl)
+        self._fill_check = QCheckBox()
+        self._fill_check.toggled.connect(self._on_fill_toggled)
+        shape_layout.addWidget(self._fill_check)
 
+        self._fill_color_btn = QPushButton()
+        self._fill_color_btn.clicked.connect(self._on_pick_fill_color)
+        self._fill_color_btn.setEnabled(False)
+        shape_layout.addWidget(self._fill_color_btn)
+
+        side_layout.addWidget(self._grp_shape)
+
+        # Section 3: Text Style properties
+        self._grp_text = QGroupBox()
+        text_layout = QVBoxLayout(self._grp_text)
+        text_layout.setSpacing(8)
+
+        font_row = QHBoxLayout()
+        self._font_family_lbl = QLabel()
+        self._font_combo = QComboBox()
+        self._font_combo.addItems(list(AVAILABLE_FONTS))
+        self._font_combo.currentTextChanged.connect(lambda f: self._canvas.set_font_family(f))
+        font_row.addWidget(self._font_family_lbl)
+        font_row.addWidget(self._font_combo, stretch=1)
+        text_layout.addLayout(font_row)
+
+        size_row = QHBoxLayout()
+        self._font_size_lbl = QLabel()
         self._font_spin = QSpinBox()
         self._font_spin.setRange(8, 72)
         self._font_spin.setValue(16)
         self._font_spin.valueChanged.connect(lambda v: self._canvas.set_font_size(float(v)))
-        self._props_bar.addWidget(self._font_spin)
+        size_row.addWidget(self._font_size_lbl)
+        size_row.addWidget(self._font_spin)
+        text_layout.addLayout(size_row)
 
-        self._props_bar.addSeparator()
+        style_row = QHBoxLayout()
+        style_row.setSpacing(6)
+        toggle_style = (
+            "QPushButton { background: #FFFFFF; border: 1px solid #D0D7DE; border-radius: 4px; "
+            "padding: 5px 10px; min-width: 34px; }"
+            "QPushButton:checked { background: #1F2328; color: #FFFFFF; border-color: #1F2328; }"
+        )
+        self._btn_bold = QPushButton()
+        self._btn_bold.setCheckable(True)
+        self._btn_bold.setStyleSheet(toggle_style + "QPushButton { font-weight: 700; }")
+        self._btn_bold.toggled.connect(lambda v: self._canvas.set_bold(v))
+        style_row.addWidget(self._btn_bold)
 
-        self._act_prev_page = QAction(self)
-        self._act_prev_page.triggered.connect(self._on_prev_page)
-        self._props_bar.addAction(self._act_prev_page)
+        self._btn_italic = QPushButton()
+        self._btn_italic.setCheckable(True)
+        self._btn_italic.setStyleSheet(toggle_style + "QPushButton { font-style: italic; }")
+        self._btn_italic.toggled.connect(lambda v: self._canvas.set_italic(v))
+        style_row.addWidget(self._btn_italic)
+
+        self._btn_underline = QPushButton()
+        self._btn_underline.setCheckable(True)
+        self._btn_underline.setStyleSheet(toggle_style + "QPushButton { text-decoration: underline; }")
+        self._btn_underline.toggled.connect(lambda v: self._canvas.set_underline(v))
+        style_row.addWidget(self._btn_underline)
+        style_row.addStretch()
+        text_layout.addLayout(style_row)
+
+        side_layout.addWidget(self._grp_text)
+
+        # Section 4: Page & Zoom navigation
+        self._grp_view = QGroupBox()
+        view_layout = QVBoxLayout(self._grp_view)
+        view_layout.setSpacing(6)
 
         self._page_lbl = QLabel()
-        self._page_lbl.setContentsMargins(8, 0, 8, 0)
-        self._props_bar.addWidget(self._page_lbl)
+        self._page_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._page_lbl.setStyleSheet("font-weight: 600;")
+        view_layout.addWidget(self._page_lbl)
 
-        self._act_next_page = QAction(self)
-        self._act_next_page.triggered.connect(self._on_next_page)
-        self._props_bar.addAction(self._act_next_page)
+        page_row = QHBoxLayout()
+        self._btn_prev_page = QPushButton()
+        self._btn_prev_page.clicked.connect(self._on_prev_page)
+        self._btn_next_page = QPushButton()
+        self._btn_next_page.clicked.connect(self._on_next_page)
+        page_row.addWidget(self._btn_prev_page)
+        page_row.addWidget(self._btn_next_page)
+        view_layout.addLayout(page_row)
 
-        self._props_bar.addSeparator()
+        zoom_row = QHBoxLayout()
+        self._btn_zoom_out = QPushButton()
+        self._btn_zoom_out.clicked.connect(lambda: self._on_zoom_factor(1.0 / 1.15))
+        self._btn_zoom_fit = QPushButton()
+        self._btn_zoom_fit.clicked.connect(self._on_zoom_fit)
+        self._btn_zoom_in = QPushButton()
+        self._btn_zoom_in.clicked.connect(lambda: self._on_zoom_factor(1.15))
+        zoom_row.addWidget(self._btn_zoom_out)
+        zoom_row.addWidget(self._btn_zoom_fit)
+        zoom_row.addWidget(self._btn_zoom_in)
+        view_layout.addLayout(zoom_row)
 
-        self._act_zoom_out = QAction(self)
-        self._act_zoom_out.triggered.connect(lambda: self._on_zoom_factor(1.0 / 1.15))
-        self._props_bar.addAction(self._act_zoom_out)
+        side_layout.addWidget(self._grp_view)
+        side_layout.addStretch()
 
-        self._act_zoom_fit = QAction(self)
-        self._act_zoom_fit.triggered.connect(self._on_zoom_fit)
-        self._props_bar.addAction(self._act_zoom_fit)
+        sidebar_scroll.setWidget(sidebar)
+        root_layout.addWidget(sidebar_scroll)
 
-        self._act_zoom_in = QAction(self)
-        self._act_zoom_in.triggered.connect(lambda: self._on_zoom_factor(1.15))
-        self._props_bar.addAction(self._act_zoom_in)
+        # Right side: Welcome / Document canvas stack
+        self._stack = QStackedWidget()
+        root_layout.addWidget(self._stack, stretch=1)
+
+        # Page 0: Empty welcome state
+        welcome = QWidget()
+        welcome_layout = QVBoxLayout(welcome)
+        welcome_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome_layout.setSpacing(14)
+
+        self._empty_headline = QLabel()
+        self._empty_headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_headline.setStyleSheet("font-size: 22px; font-weight: 700; color: #1F2328;")
+        welcome_layout.addWidget(self._empty_headline)
+
+        self._empty_subtext = QLabel()
+        self._empty_subtext.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_subtext.setStyleSheet("font-size: 13px; color: #59636E;")
+        welcome_layout.addWidget(self._empty_subtext)
+
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_row.setSpacing(10)
+
+        self._empty_open_btn = QPushButton()
+        self._empty_open_btn.setStyleSheet(
+            "QPushButton { background: #D1242F; color: #FFFFFF; font-weight: 600; "
+            "padding: 10px 20px; border-radius: 6px; border: none; }"
+            "QPushButton:hover { background: #A40E26; }"
+        )
+        self._empty_open_btn.clicked.connect(self._on_open_pdf)
+        btn_row.addWidget(self._empty_open_btn)
+
+        self._empty_convert_btn = QPushButton()
+        self._empty_convert_btn.setStyleSheet("QPushButton { padding: 10px 18px; }")
+        self._empty_convert_btn.clicked.connect(self._on_convert_file)
+        btn_row.addWidget(self._empty_convert_btn)
+
+        self._empty_setup_btn = QPushButton()
+        self._empty_setup_btn.setStyleSheet("QPushButton { padding: 10px 18px; }")
+        self._empty_setup_btn.clicked.connect(self._on_open_setup)
+        btn_row.addWidget(self._empty_setup_btn)
+
+        welcome_layout.addLayout(btn_row)
+        self._stack.addWidget(welcome)
+
+        # Page 1: Scrollable PDF canvas
+        self._scroll = QScrollArea()
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setStyleSheet("QScrollArea { background: #E5E7EB; border: none; }")
+        self._canvas = PdfCanvasWidget()
+        self._canvas.annotation_created.connect(self._on_annotation_created)
+        self._canvas.crop_selected.connect(self._on_crop_selected)
+        self._canvas.zoom_requested.connect(self._on_zoom_factor)
+        self._canvas.status_hint.connect(lambda msg: self.statusBar().showMessage(msg))
+        self._scroll.setWidget(self._canvas)
+        self._stack.addWidget(self._scroll)
+
+        self._update_color_button_style(self._color_btn, self._active_color)
+        self._update_color_button_style(self._fill_color_btn, self._fill_color)
 
     def _retranslate_ui(self) -> None:
         self._update_window_title()
@@ -338,18 +444,33 @@ class MainWindow(QMainWindow):
         self._menu_help.setTitle(t("menu.help"))
         self._act_about.setText(t("menu.help.about"))
 
-        for kind, act in self._tool_actions.items():
-            act.setText(t(f"tool.{kind.value}"))
-            act.setToolTip(t(f"tool.{kind.value}.tip"))
+        self._grp_tools.setTitle(t("sidebar.tools_section"))
+        self._grp_shape.setTitle(t("sidebar.shape_section"))
+        self._grp_text.setTitle(t("sidebar.text_section"))
+        self._grp_view.setTitle(t("sidebar.view_section"))
+
+        for kind, btn in self._tool_buttons.items():
+            btn.setText(t(f"tool.{kind.value}"))
+            btn.setToolTip(t(f"tool.{kind.value}.tip"))
 
         self._color_btn.setText(t("toolbar.color"))
         self._stroke_lbl.setText(t("toolbar.stroke"))
-        self._font_lbl.setText(t("toolbar.font_size"))
-        self._act_prev_page.setText(t("toolbar.prev_page"))
-        self._act_next_page.setText(t("toolbar.next_page"))
-        self._act_zoom_out.setText(t("toolbar.zoom_out"))
-        self._act_zoom_fit.setText(t("toolbar.zoom_fit"))
-        self._act_zoom_in.setText(t("toolbar.zoom_in"))
+        self._fill_check.setText(t("toolbar.fill_enable"))
+        self._fill_color_btn.setText(t("toolbar.fill_color"))
+        self._font_family_lbl.setText(t("toolbar.font_family"))
+        self._font_size_lbl.setText(t("toolbar.font_size"))
+        self._btn_bold.setText(t("toolbar.bold"))
+        self._btn_bold.setToolTip(t("toolbar.bold.tip"))
+        self._btn_italic.setText(t("toolbar.italic"))
+        self._btn_italic.setToolTip(t("toolbar.italic.tip"))
+        self._btn_underline.setText(t("toolbar.underline"))
+        self._btn_underline.setToolTip(t("toolbar.underline.tip"))
+
+        self._btn_prev_page.setText(t("toolbar.prev_page"))
+        self._btn_next_page.setText(t("toolbar.next_page"))
+        self._btn_zoom_out.setText(t("toolbar.zoom_out"))
+        self._btn_zoom_fit.setText(t("toolbar.zoom_fit"))
+        self._btn_zoom_in.setText(t("toolbar.zoom_in"))
 
         self._empty_headline.setText(t("empty.headline"))
         self._empty_subtext.setText(t("empty.subtext"))
@@ -390,21 +511,23 @@ class MainWindow(QMainWindow):
         )
         for _key, act in self._downsize_actions:
             act.setEnabled(opened)
-        self._act_prev_page.setEnabled(opened and self._page_index > 0)
-        self._act_next_page.setEnabled(opened and self._page_index < self._doc.page_count - 1)
-        self._act_zoom_in.setEnabled(opened)
-        self._act_zoom_out.setEnabled(opened)
-        self._act_zoom_fit.setEnabled(opened)
+        self._btn_prev_page.setEnabled(opened and self._page_index > 0)
+        self._btn_next_page.setEnabled(opened and self._page_index < self._doc.page_count - 1)
+        self._btn_zoom_in.setEnabled(opened)
+        self._btn_zoom_out.setEnabled(opened)
+        self._btn_zoom_fit.setEnabled(opened)
         self._update_page_indicator()
         self._update_window_title()
 
-    def _update_color_button_style(self) -> None:
-        c = QColor(self._active_color)
+    @staticmethod
+    def _update_color_button_style(btn: QPushButton, hex_color: str) -> None:
+        c = QColor(hex_color)
         luminance = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
         text_color = "#1F2328" if luminance > 155 else "#FFFFFF"
-        self._color_btn.setStyleSheet(
-            f"QPushButton {{ background: {self._active_color}; color: {text_color}; "
-            "font-weight: 600; padding: 4px 12px; border-radius: 4px; border: 1px solid #9CA3AF; }}"
+        btn.setStyleSheet(
+            f"QPushButton {{ background: {hex_color}; color: {text_color}; "
+            "font-weight: 600; padding: 6px 10px; border-radius: 4px; border: 1px solid #9CA3AF; }}"
+            "QPushButton:disabled { opacity: 0.45; background: #E5E7EB; color: #9CA3AF; }"
         )
 
     def _render_current_page(self) -> None:
@@ -553,7 +676,21 @@ class MainWindow(QMainWindow):
         if chosen.isValid():
             self._active_color = chosen.name()
             self._canvas.set_color(self._active_color)
-            self._update_color_button_style()
+            self._update_color_button_style(self._color_btn, self._active_color)
+
+    def _on_fill_toggled(self, checked: bool) -> None:
+        self._canvas.set_filled(checked)
+        self._fill_color_btn.setEnabled(checked)
+        self._update_color_button_style(self._fill_color_btn, self._fill_color)
+
+    def _on_pick_fill_color(self) -> None:
+        chosen = QColorDialog.getColor(
+            QColor(self._fill_color), self, t("dialog.fill_color.title")
+        )
+        if chosen.isValid():
+            self._fill_color = chosen.name()
+            self._canvas.set_fill_color(self._fill_color)
+            self._update_color_button_style(self._fill_color_btn, self._fill_color)
 
     def _on_annotation_created(self, item: AnnotationItem) -> None:
         self._session.add_annotation(self._page_index, item)

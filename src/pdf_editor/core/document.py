@@ -18,12 +18,40 @@ from .models import AnnotationItem, DocumentEditSession, PageEdits, RectNorm
 
 BAKE_DPI = 250.0
 
+# Mapping: font family -> (regular, bold, italic, bold_italic) Windows font filenames
+_FONT_FILES: dict[str, tuple[str, str, str, str]] = {
+    "Segoe UI": ("segoeui.ttf", "segoeuib.ttf", "segoeuii.ttf", "segoeuiz.ttf"),
+    "Arial": ("arial.ttf", "arialbd.ttf", "ariali.ttf", "arialbi.ttf"),
+    "Calibri": ("calibri.ttf", "calibrib.ttf", "calibrii.ttf", "calibriz.ttf"),
+    "Times New Roman": ("times.ttf", "timesbd.ttf", "timesi.ttf", "timesbi.ttf"),
+    "Consolas": ("consola.ttf", "consolab.ttf", "consolai.ttf", "consolaz.ttf"),
+    "Georgia": ("georgia.ttf", "georgiab.ttf", "georgiai.ttf", "georgiaz.ttf"),
+    "Tahoma": ("tahoma.ttf", "tahomabd.ttf", "tahoma.ttf", "tahomabd.ttf"),
+    "Verdana": ("verdana.ttf", "verdanab.ttf", "verdanai.ttf", "verdanaz.ttf"),
+}
 
-def _load_unicode_font(pixel_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Load a Windows TrueType font with full Latin-Extended (Czech) support."""
+
+def _load_unicode_font(
+    pixel_size: int,
+    family: str = "Segoe UI",
+    bold: bool = False,
+    italic: bool = False,
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Load a Windows TrueType font matching family/bold/italic with full Czech support."""
     size = max(10, int(round(pixel_size)))
     fonts_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-    for name in ("segoeui.ttf", "arial.ttf", "calibri.ttf", "tahoma.ttf"):
+
+    style_idx = (1 if bold else 0) + (2 if italic else 0)
+    candidates: list[str] = []
+    if family in _FONT_FILES:
+        files = _FONT_FILES[family]
+        candidates.append(files[style_idx])
+        candidates.append(files[0])
+    for fallback_files in (_FONT_FILES["Segoe UI"], _FONT_FILES["Arial"]):
+        candidates.append(fallback_files[style_idx])
+        candidates.append(fallback_files[0])
+
+    for name in candidates:
         candidate = fonts_dir / name
         if candidate.exists():
             try:
@@ -65,16 +93,85 @@ def _draw_arrow(
     draw.polygon([(x1, y1), (bx + px, by + py), (bx - px, by - py)], fill=color)
 
 
+def _wrap_text_to_width(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    max_width: float,
+) -> list[str]:
+    """Word-wrap multiline text to fit inside `max_width` pixels."""
+    lines: list[str] = []
+    safe_max = max(20.0, max_width)
+    for paragraph in text.splitlines() or [""]:
+        if not paragraph:
+            lines.append("")
+            continue
+        words = paragraph.split(" ")
+        current = ""
+        for word in words:
+            trial = f"{current} {word}".strip() if current else word
+            bbox = draw.textbbox((0, 0), trial, font=font)
+            if (bbox[2] - bbox[0]) <= safe_max or not current:
+                current = trial
+            else:
+                lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+    return lines
+
+
+def _draw_bounded_text(
+    rgba: Image.Image,
+    item: AnnotationItem,
+    scale: float,
+) -> None:
+    """Draw word-wrapped, styled text clipped inside the user's drawn bounding box."""
+    img_w, img_h = rgba.size
+    r = item.rect()
+    box_x = int(round(r.x0 * img_w))
+    box_y = int(round(r.y0 * img_h))
+    box_w = max(40, int(round(r.width * img_w))) if r.width > 0.005 else max(40, img_w - box_x)
+    box_h = max(30, int(round(r.height * img_h))) if r.height > 0.005 else max(30, img_h - box_y)
+
+    text_layer = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+    tdraw = ImageDraw.Draw(text_layer)
+
+    font_px = int(round(item.font_size * scale * 1.45))
+    font = _load_unicode_font(
+        font_px,
+        family=item.font_family,
+        bold=item.bold,
+        italic=item.italic,
+    )
+    rgb = _parse_rgb(item.color)
+    rgba_color = (rgb[0], rgb[1], rgb[2], 255)
+
+    lines = _wrap_text_to_width(tdraw, item.text, font, box_w - 4)
+    sample_bbox = tdraw.textbbox((0, 0), "AgČý", font=font)
+    line_h = max(font_px + 4, int(round((sample_bbox[3] - sample_bbox[1]) * 1.25)))
+    underline_thickness = max(1, int(round(font_px / 14.0)))
+
+    y = 2
+    for line in lines:
+        if y >= box_h:
+            break
+        tdraw.text((2, y), line, fill=rgba_color, font=font)
+        if item.underline and line.strip():
+            lb = tdraw.textbbox((2, y), line, font=font)
+            uy = lb[3] + max(1, underline_thickness)
+            tdraw.line([(lb[0], uy), (lb[2], uy)], fill=rgba_color, width=underline_thickness)
+        y += line_h
+
+    rgba.alpha_composite(text_layer, dest=(box_x, box_y))
+
+
 def composite_annotations_on_image(
     base_image: Image.Image,
     edits: PageEdits,
     dpi: float = BAKE_DPI,
 ) -> Image.Image:
-    """Render all redactions, shapes, highlights, text, and crop onto a PIL RGB image.
-
-    Redactions are painted opaquely directly onto the raster image so no underlying
-    text, vectors, or pixels survive.
-    """
+    """Render all redactions, shapes, polygons, highlights, text, and crop onto a PIL RGB image."""
     rgba = base_image.convert("RGBA")
     img_w, img_h = rgba.size
     scale = dpi / 96.0
@@ -105,7 +202,7 @@ def composite_annotations_on_image(
             fill=fill,
         )
 
-    # Layer 3: geometric shapes & text
+    # Layer 3: geometric shapes, custom polygons, lines, arrows, and bounded rich text
     for item in edits.annotations:
         if item.kind in ("highlight", "redact_black", "redact_white"):
             continue
@@ -113,10 +210,16 @@ def composite_annotations_on_image(
         rgba_color = (rgb[0], rgb[1], rgb[2], 255)
         stroke = max(1, int(round(item.stroke_width * scale)))
 
+        fill_rgba: tuple[int, int, int, int] | None = None
+        if item.filled:
+            fr, fg, fb = _parse_rgb(item.fill_color)
+            fill_rgba = (fr, fg, fb, 255)
+
         if item.kind == "rect":
             r = item.rect()
             draw.rectangle(
                 [r.x0 * img_w, r.y0 * img_h, r.x1 * img_w, r.y1 * img_h],
+                fill=fill_rgba,
                 outline=rgba_color,
                 width=stroke,
             )
@@ -124,9 +227,16 @@ def composite_annotations_on_image(
             r = item.rect()
             draw.ellipse(
                 [r.x0 * img_w, r.y0 * img_h, r.x1 * img_w, r.y1 * img_h],
+                fill=fill_rgba,
                 outline=rgba_color,
                 width=stroke,
             )
+        elif item.kind == "polygon" and len(item.points) >= 3:
+            pts = [(px * img_w, py * img_h) for px, py in item.points]
+            if fill_rgba is not None:
+                draw.polygon(pts, fill=fill_rgba)
+            closed = pts + [pts[0]]
+            draw.line(closed, fill=rgba_color, width=stroke, joint="curve")
         elif item.kind == "line":
             draw.line(
                 [
@@ -147,13 +257,8 @@ def composite_annotations_on_image(
                 stroke,
             )
         elif item.kind == "text" and item.text:
-            font = _load_unicode_font(int(round(item.font_size * scale)))
-            draw.multiline_text(
-                (item.x0 * img_w, item.y0 * img_h),
-                item.text,
-                fill=rgba_color,
-                font=font,
-            )
+            _draw_bounded_text(rgba, item, scale)
+            draw = ImageDraw.Draw(rgba)
 
     rgb_out = rgba.convert("RGB")
 
@@ -180,7 +285,6 @@ def _apply_vector_crop(page, crop: RectNorm) -> None:
     width = urx - llx
     height = ury - lly
 
-    # Convert top-left normalized coordinates to bottom-left PDF coordinates
     new_llx = llx + c.x0 * width
     new_urx = llx + c.x1 * width
     new_ury = ury - c.y0 * height
@@ -192,7 +296,6 @@ def _apply_vector_crop(page, crop: RectNorm) -> None:
 
 
 def _image_to_single_page_pdf(img: Image.Image, target_w_pt: float, target_h_pt: float):
-    """Wrap a PIL RGB image into a single-page pypdf PageObject sized in PDF points."""
     dpi_x = (img.width * 72.0) / max(1.0, target_w_pt)
     buf = io.BytesIO()
     img.save(buf, format="PDF", resolution=dpi_x, quality=92)
@@ -231,7 +334,6 @@ class PdfDocumentService:
         if src.suffix.lower() != ".pdf":
             raise ValueError(t("error.not_a_pdf", filename=src.name))
 
-        # Verify readability and check password protection with pypdf
         reader = PdfReader(str(src))
         if reader.is_encrypted:
             try:
@@ -269,7 +371,6 @@ class PdfDocumentService:
             page.close()
 
     def render_page(self, page_index: int, dpi: float = 144.0) -> Image.Image:
-        """Render a 0-based PDF page to a PIL RGB image at the requested DPI."""
         if self._pdfium_doc is None:
             raise RuntimeError("No PDF document is open.")
         page = self._pdfium_doc[page_index]
@@ -285,7 +386,6 @@ class PdfDocumentService:
         session: DocumentEditSession,
         output_path: str | Path | None = None,
     ) -> Path:
-        """Persist all edits to `output_path` (or overwrite the open file atomically)."""
         if not self.is_open or self._path is None:
             raise RuntimeError("No PDF document is open.")
 
@@ -293,7 +393,6 @@ class PdfDocumentService:
         dst = Path(output_path).resolve() if output_path else src
         edited_pages = session.all_edited_pages()
 
-        # Pre-render all pages that require raster baking while pdfium handle is open
         baked_pages: dict[int, tuple[Image.Image, float, float]] = {}
         for page_idx, edits in edited_pages.items():
             if edits.annotations:
@@ -308,7 +407,6 @@ class PdfDocumentService:
                     target_w_pt, target_h_pt = orig_w_pt, orig_h_pt
                 baked_pages[page_idx] = (baked_img, target_w_pt, target_h_pt)
 
-        # Build output PDF in memory / temp file
         reader = PdfReader(str(src))
         if reader.is_encrypted:
             reader.decrypt("")
@@ -338,7 +436,6 @@ class PdfDocumentService:
                 writer.write(handle)
 
             if overwriting_open_file:
-                # Release Windows file lock before replacing the open PDF
                 self.close()
 
             tmp_path.replace(dst)
@@ -348,7 +445,6 @@ class PdfDocumentService:
                 self.open(src)
             raise
 
-        # Reopen the saved file so rendering reflects the new saved state
         self.open(dst)
         session.mark_saved()
         return dst

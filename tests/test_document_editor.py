@@ -90,19 +90,46 @@ def test_shapes_text_and_crop_save_and_undo_redo(tmp_path: Path) -> None:
     session = DocumentEditSession()
     doc.open(pdf_path)
 
-    session.add_annotation(0, AnnotationItem(kind="rect", x0=0.1, y0=0.2, x1=0.4, y1=0.4))
+    session.add_annotation(
+        0,
+        AnnotationItem(
+            kind="rect",
+            x0=0.1,
+            y0=0.2,
+            x1=0.4,
+            y1=0.4,
+            filled=True,
+            fill_color="#00AA00",
+            stroke_width=4.0,
+        ),
+    )
     session.add_annotation(0, AnnotationItem(kind="ellipse", x0=0.5, y0=0.2, x1=0.8, y1=0.4))
-    session.add_annotation(0, AnnotationItem(kind="arrow", x0=0.1, y0=0.5, x1=0.6, y1=0.6))
+    session.add_annotation(
+        0,
+        AnnotationItem(
+            kind="polygon",
+            points=((0.15, 0.55), (0.35, 0.50), (0.40, 0.65), (0.20, 0.68)),
+            color="#1D4ED8",
+            filled=True,
+            fill_color="#93C5FD",
+            stroke_width=3.0,
+        ),
+    )
+    session.add_annotation(0, AnnotationItem(kind="arrow", x0=0.5, y0=0.5, x1=0.8, y1=0.6))
     session.add_annotation(
         0,
         AnnotationItem(
             kind="text",
             x0=0.1,
             y0=0.7,
-            x1=0.1,
-            y1=0.7,
-            text="Příliš žluťoučký kůň",
+            x1=0.8,
+            y1=0.9,
+            text="Příliš žluťoučký kůň úpěl ďábelské ódy",
+            font_family="Arial",
             font_size=18.0,
+            bold=True,
+            italic=True,
+            underline=True,
         ),
     )
     session.set_crop(0, RectNorm(0.05, 0.05, 0.95, 0.95))
@@ -118,6 +145,11 @@ def test_shapes_text_and_crop_save_and_undo_redo(tmp_path: Path) -> None:
     doc.save(session, output_path=out_path)
     assert out_path.exists()
     assert len(PdfReader(str(out_path)).pages) == 1
+
+    # Verify filled rectangle actually painted green pixels inside the saved PDF
+    rendered = doc.render_page(0, dpi=72.0)
+    r, g, b = rendered.getpixel((int(rendered.width * 0.25), int(rendered.height * 0.30)))
+    assert g > r + 40 and g > b + 40, f"Expected green filled rectangle pixel, got {(r, g, b)}"
     doc.close()
 
 

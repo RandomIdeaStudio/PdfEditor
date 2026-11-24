@@ -11,12 +11,24 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
+AVAILABLE_FONTS: tuple[str, ...] = (
+    "Segoe UI",
+    "Arial",
+    "Calibri",
+    "Times New Roman",
+    "Consolas",
+    "Georgia",
+    "Tahoma",
+    "Verdana",
+)
+
 
 class ToolKind(str, Enum):
     PAN = "pan"
     CROP = "crop"
     RECT = "rect"
     ELLIPSE = "ellipse"
+    POLYGON = "polygon"
     LINE = "line"
     ARROW = "arrow"
     HIGHLIGHT = "highlight"
@@ -59,6 +71,7 @@ class AnnotationItem:
     kind: Literal[
         "rect",
         "ellipse",
+        "polygon",
         "line",
         "arrow",
         "highlight",
@@ -66,14 +79,21 @@ class AnnotationItem:
         "redact_black",
         "redact_white",
     ]
-    x0: float
-    y0: float
-    x1: float
-    y1: float
+    x0: float = 0.0
+    y0: float = 0.0
+    x1: float = 0.0
+    y1: float = 0.0
+    points: tuple[tuple[float, float], ...] = ()
     color: str = "#D1242F"
+    filled: bool = False
+    fill_color: str = "#FEE2E2"
     stroke_width: float = 3.0
     text: str = ""
+    font_family: str = "Segoe UI"
     font_size: float = 16.0
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
 
     @property
     def is_redaction(self) -> bool:
