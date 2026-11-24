@@ -1,9 +1,9 @@
 {
-  "app.name": "PdfEditor",
-  "app.title": "PdfEditor",
-  "app.title_with_file": "{filename} – PdfEditor",
-  "app.title_with_file_dirty": "{filename}* – PdfEditor",
-  "app.display_name": "PdfEditor – PDF Editor a zmenšení PDF",
+  "app.name": "PDF Editor",
+  "app.title": "PDF Editor",
+  "app.title_with_file": "{filename} – PDF Editor",
+  "app.title_with_file_dirty": "{filename}* – PDF Editor",
+  "app.display_name": "PDF Editor – úpravy, zmenšení a převod PDF",
 
   "menu.file": "&Soubor",
   "menu.file.open": "&Otevřít PDF…",
@@ -39,7 +39,7 @@
   "menu.language.en": "English",
 
   "menu.help": "&Nápověda",
-  "menu.help.about": "&O aplikaci PdfEditor",
+  "menu.help.about": "&O aplikaci PDF Editor",
 
   "tool.pan": "✋ Posun",
   "tool.pan.tip": "Prohlížení a posouvání stránky bez kreslení",
@@ -164,12 +164,12 @@
   "preset.high.short": "Vysoká kvalita (230 DPI)",
   "preset.high.desc": "Šetrná komprese se zachováním vysoké kvality pro tisk.",
 
-  "context_menu.edit": "Upravit v PdfEditoru",
+  "context_menu.edit": "Upravit v PDF Editoru",
   "context_menu.downsize": "Zmenšit PDF",
   "context_menu.convert": "Převést do PDF",
 
-  "setup.title": "PdfEditor – Integrace do Windows",
-  "setup.subtitle": "Nainstalujte PdfEditor do pravého tlačítka Windows 10 a 11 (bez administrátorských práv).",
+  "setup.title": "PDF Editor – Integrace do Windows",
+  "setup.subtitle": "Nainstalujte PDF Editor do pravého tlačítka Windows 10 a 11 (bez administrátorských práv).",
   "setup.status.installed": "Nainstalováno v kontextovém menu Windows",
   "setup.status.not_installed": "Zatím nenainstalováno",
   "setup.status.location": "Umístění instalace: {path}",
@@ -183,10 +183,10 @@
   "setup.btn.open_editor": "Otevřít editor",
   "setup.btn.close": "Zavřít",
   "setup.msg.installed_title": "Instalace dokončena",
-  "setup.msg.installed_body": "PdfEditor byl úspěšně nainstalován do:\n{path}\n\nIntegrace do pravého tlačítka je aktivní.",
-  "setup.msg.uninstall_confirm": "Opravdu chcete odebrat PdfEditor z pravého tlačítka Windows a odinstalovat ho?",
+  "setup.msg.installed_body": "PDF Editor byl úspěšně nainstalován do:\n{path}\n\nIntegrace do pravého tlačítka je aktivní.",
+  "setup.msg.uninstall_confirm": "Opravdu chcete odebrat PDF Editor z pravého tlačítka Windows a odinstalovat ho?",
   "setup.msg.uninstalled_title": "Odinstalováno",
-  "setup.msg.uninstalled_body": "PdfEditor byl úspěšně odebrán z kontextového menu Windows.",
+  "setup.msg.uninstalled_body": "PDF Editor byl úspěšně odebrán z kontextového menu Windows.",
 
   "toast.downsizing": "Zmenšuji PDF ({preset})…",
   "toast.downsizing_page": "{filename} • strana {current}/{total}",
@@ -202,9 +202,10 @@
   "toast.converted_detail": "{filename}\nVelikost: {size}",
   "toast.error_title": "Operace se nezdařila",
 
-  "about.title": "O aplikaci PdfEditor",
+  "about.title": "O aplikaci PDF Editor",
   "about.version": "Verze {version}",
   "about.copyright": "Copyright © 2026 Random Idea Studio. Šířeno pod licencí MIT.",
+  "about.privacy": "Soukromí: PDF Editor funguje zcela offline. Nikam neodesílá žádná data a nesbírá telemetrii.",
   "about.description": "Samostatný PDF editor se skutečným nevratným začerněním, zmenšováním PDF a tichým převodem souborů do PDF.",
   "about.licenses_header": "Použité open-source komponenty třetích stran:",
   "about.licenses_body": "• PySide6 / Qt 6 (LGPL-3.0)\n• pypdfium2 / PDFium (Apache-2.0 / BSD-3-Clause)\n• pypdf (BSD-3-Clause)\n• Pillow (MIT-CMU)\n• pywin32 (PSF-2.0)",

@@ -1,4 +1,4 @@
-# UTF-8
+﻿# UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
     filevers=(1, 0, 0, 0),
@@ -17,12 +17,12 @@ VSVersionInfo(
           '040904B0',
           [
             StringStruct('CompanyName', 'Random Idea Studio'),
-            StringStruct('FileDescription', 'PdfEditor - PDF Editor, Downsizer and Converter'),
+            StringStruct('FileDescription', 'PDF Editor - edit, downsize and convert PDF'),
             StringStruct('FileVersion', '1.0.0.0'),
             StringStruct('InternalName', 'PdfEditor'),
             StringStruct('LegalCopyright', 'Copyright (c) 2026 Random Idea Studio (MIT License)'),
             StringStruct('OriginalFilename', 'PdfEditor.exe'),
-            StringStruct('ProductName', 'PdfEditor'),
+            StringStruct('ProductName', 'PDF Editor'),
             StringStruct('ProductVersion', '1.0.0.0')
           ]
         )

@@ -1,9 +1,9 @@
 {
-  "app.name": "PdfEditor",
-  "app.title": "PdfEditor",
-  "app.title_with_file": "{filename} – PdfEditor",
-  "app.title_with_file_dirty": "{filename}* – PdfEditor",
-  "app.display_name": "PdfEditor – PDF Editor & Downsizer",
+  "app.name": "PDF Editor",
+  "app.title": "PDF Editor",
+  "app.title_with_file": "{filename} – PDF Editor",
+  "app.title_with_file_dirty": "{filename}* – PDF Editor",
+  "app.display_name": "PDF Editor – edit, downsize and convert PDF",
 
   "menu.file": "&File",
   "menu.file.open": "&Open PDF…",
@@ -39,7 +39,7 @@
   "menu.language.en": "English",
 
   "menu.help": "&Help",
-  "menu.help.about": "&About PdfEditor",
+  "menu.help.about": "&About PDF Editor",
 
   "tool.pan": "✋ Pan",
   "tool.pan.tip": "Scroll and view the PDF without drawing",
@@ -164,12 +164,12 @@
   "preset.high.short": "High quality (230 DPI)",
   "preset.high.desc": "Gentle compression keeping crisp quality for printing.",
 
-  "context_menu.edit": "Edit in PdfEditor",
+  "context_menu.edit": "Edit in PDF Editor",
   "context_menu.downsize": "Downsize PDF",
   "context_menu.convert": "Convert to PDF",
 
-  "setup.title": "PdfEditor – Windows Integration",
-  "setup.subtitle": "Install PdfEditor into the Windows 10 & 11 right-click menu (no admin rights needed).",
+  "setup.title": "PDF Editor – Windows Integration",
+  "setup.subtitle": "Install PDF Editor into the Windows 10 & 11 right-click menu (no admin rights needed).",
   "setup.status.installed": "Installed in Windows context menu",
   "setup.status.not_installed": "Not installed yet",
   "setup.status.location": "Install location: {path}",
@@ -183,10 +183,10 @@
   "setup.btn.open_editor": "Open Editor",
   "setup.btn.close": "Close",
   "setup.msg.installed_title": "Installation Complete",
-  "setup.msg.installed_body": "PdfEditor was successfully installed to:\n{path}\n\nRight-click menu integration is now active.",
-  "setup.msg.uninstall_confirm": "Remove PdfEditor from the Windows right-click menu and uninstall it?",
+  "setup.msg.installed_body": "PDF Editor was successfully installed to:\n{path}\n\nRight-click menu integration is now active.",
+  "setup.msg.uninstall_confirm": "Remove PDF Editor from the Windows right-click menu and uninstall it?",
   "setup.msg.uninstalled_title": "Uninstalled",
-  "setup.msg.uninstalled_body": "PdfEditor was successfully removed from the Windows context menu.",
+  "setup.msg.uninstalled_body": "PDF Editor was successfully removed from the Windows context menu.",
 
   "toast.downsizing": "Downsizing PDF ({preset})…",
   "toast.downsizing_page": "{filename} • page {current}/{total}",
@@ -202,9 +202,10 @@
   "toast.converted_detail": "{filename}\nSize: {size}",
   "toast.error_title": "Operation failed",
 
-  "about.title": "About PdfEditor",
+  "about.title": "About PDF Editor",
   "about.version": "Version {version}",
   "about.copyright": "Copyright © 2026 Random Idea Studio. Licensed under the MIT License.",
+  "about.privacy": "Privacy: PDF Editor works fully offline. It sends no data anywhere and collects no telemetry.",
   "about.description": "Standalone PDF editor with true irreversible redaction, PDF downsizing, and silent conversion to PDF.",
   "about.licenses_header": "Third-party open-source components:",
   "about.licenses_body": "• PySide6 / Qt 6 (LGPL-3.0)\n• pypdfium2 / PDFium (Apache-2.0 / BSD-3-Clause)\n• pypdf (BSD-3-Clause)\n• Pillow (MIT-CMU)\n• pywin32 (PSF-2.0)",

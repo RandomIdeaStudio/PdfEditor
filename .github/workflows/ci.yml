@@ -1,4 +1,4 @@
-name: CI
+﻿name: CI
 
 # Studio rule: run only by hand (Actions -> CI -> Run workflow) to save Actions minutes.
 on:
@@ -9,6 +9,15 @@ on:
         required: false
         default: true
         type: boolean
+      sign:
+        description: "Submit the built executable to SignPath for code signing (needs build_exe)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   test-and-build:
@@ -34,9 +43,35 @@ jobs:
         shell: pwsh
         run: .\scripts\build.ps1
 
-      - name: Upload Windows installer artifact
+      - name: Upload unsigned Windows installer artifact
+        id: upload-unsigned-artifact
         if: ${{ inputs.build_exe }}
         uses: actions/upload-artifact@v4
         with:
-          name: PdfEditor-windows-x64
-          path: dist/PdfEditor_Setup_v1.0.0.exe
+          name: PdfEditor-windows-x64-unsigned
+          path: dist/PdfEditor_Setup_v*.exe
+          if-no-files-found: error
+
+      # Free code signing provided by SignPath.io, certificate by SignPath Foundation.
+      # Needs the repository secret SIGNPATH_API_TOKEN and the repository variables
+      # SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG and SIGNPATH_SIGNING_POLICY_SLUG.
+      - name: Submit signing request to SignPath
+        if: ${{ inputs.build_exe && inputs.sign }}
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-artifact.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: dist/signed
+
+      - name: Upload signed Windows installer artifact
+        if: ${{ inputs.build_exe && inputs.sign }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: PdfEditor-windows-x64-signed
+          path: dist/signed/*
+          if-no-files-found: error
