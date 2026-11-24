@@ -176,25 +176,27 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root_widget)
 
         # Left scrollable editing sidebar
-        sidebar_scroll = QScrollArea()
-        sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        sidebar_scroll.setFixedWidth(268)
-        sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        sidebar_scroll.setStyleSheet(
+        self._sidebar_scroll = QScrollArea()
+        self._sidebar_scroll.setWidgetResizable(True)
+        self._sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar_scroll.setFixedWidth(324)
+        self._sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._sidebar_scroll.setStyleSheet(
             "QScrollArea { background: #F6F8FA; border-right: 1px solid #D0D7DE; }"
         )
 
-        sidebar = QWidget()
-        sidebar.setStyleSheet("QWidget { background: #F6F8FA; }")
-        side_layout = QVBoxLayout(sidebar)
-        side_layout.setContentsMargins(10, 10, 10, 12)
+        self._sidebar = QWidget()
+        self._sidebar.setStyleSheet("QWidget { background: #F6F8FA; }")
+        side_layout = QVBoxLayout(self._sidebar)
+        side_layout.setContentsMargins(10, 10, 14, 12)
         side_layout.setSpacing(10)
 
         # Section 1: Tools
         self._grp_tools = QGroupBox()
         tools_grid = QGridLayout(self._grp_tools)
         tools_grid.setSpacing(6)
+        tools_grid.setColumnStretch(0, 1)
+        tools_grid.setColumnStretch(1, 1)
 
         self._tool_btn_group = QButtonGroup(self)
         self._tool_btn_group.setExclusive(True)
@@ -349,8 +351,8 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(self._grp_view)
         side_layout.addStretch()
 
-        sidebar_scroll.setWidget(sidebar)
-        root_layout.addWidget(sidebar_scroll)
+        self._sidebar_scroll.setWidget(self._sidebar)
+        root_layout.addWidget(self._sidebar_scroll)
 
         # Right side: Welcome / Document canvas stack
         self._stack = QStackedWidget()
@@ -481,6 +483,13 @@ class MainWindow(QMainWindow):
         self._update_page_indicator()
         if not self._doc.is_open:
             self.statusBar().showMessage(t("status.ready"))
+        self._fit_sidebar_width()
+
+    def _fit_sidebar_width(self) -> None:
+        """Ensure the left sidebar fits every QGroupBox frame plus vertical scrollbar cleanly."""
+        self._sidebar.adjustSize()
+        needed = self._sidebar.sizeHint().width() + 26
+        self._sidebar_scroll.setFixedWidth(max(336, min(380, needed)))
 
     # ------------------------------------------------------------------ State helpers
 
