@@ -463,7 +463,12 @@ class MainWindow(QMainWindow):
         welcome_layout.addLayout(btn_row)
         self._stack.addWidget(welcome)
 
-        # Page 1: Scrollable PDF canvas
+        # Page 1: Scrollable PDF canvas with floating corner zoom overlay
+        self._canvas_host = QWidget()
+        host_layout = QVBoxLayout(self._canvas_host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.setSpacing(0)
+
         self._scroll = QScrollArea()
         self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scroll.setStyleSheet("QScrollArea { background: #E5E7EB; border: none; }")
@@ -471,9 +476,42 @@ class MainWindow(QMainWindow):
         self._canvas.annotation_created.connect(self._on_annotation_created)
         self._canvas.crop_selected.connect(self._on_crop_selected)
         self._canvas.zoom_requested.connect(self._on_zoom_factor)
+        self._canvas.pan_requested.connect(self._on_pan_delta)
         self._canvas.status_hint.connect(lambda msg: self.statusBar().showMessage(msg))
         self._scroll.setWidget(self._canvas)
-        self._stack.addWidget(self._scroll)
+        host_layout.addWidget(self._scroll)
+
+        # Floating bottom-right zoom pill (- | 100% | +)
+        self._zoom_overlay = QFrame(self._canvas_host)
+        self._zoom_overlay.setStyleSheet(
+            "QFrame { background: rgba(31, 35, 40, 220); border-radius: 8px; }"
+            "QPushButton { background: transparent; color: #FFFFFF; border: none; "
+            "font-size: 15px; font-weight: 700; padding: 6px 10px; min-width: 28px; }"
+            "QPushButton:hover { background: rgba(255, 255, 255, 35); border-radius: 6px; }"
+        )
+        zoom_ov_layout = QHBoxLayout(self._zoom_overlay)
+        zoom_ov_layout.setContentsMargins(4, 3, 4, 3)
+        zoom_ov_layout.setSpacing(2)
+
+        self._ov_zoom_out = QPushButton("−")
+        self._ov_zoom_out.clicked.connect(lambda: self._on_zoom_factor(1.0 / 1.15))
+        zoom_ov_layout.addWidget(self._ov_zoom_out)
+
+        self._ov_zoom_pct = QPushButton("100%")
+        self._ov_zoom_pct.setStyleSheet(
+            "QPushButton { font-size: 12px; font-weight: 600; min-width: 46px; padding: 6px 6px; }"
+        )
+        self._ov_zoom_pct.clicked.connect(self._on_zoom_fit)
+        zoom_ov_layout.addWidget(self._ov_zoom_pct)
+
+        self._ov_zoom_in = QPushButton("+")
+        self._ov_zoom_in.clicked.connect(lambda: self._on_zoom_factor(1.15))
+        zoom_ov_layout.addWidget(self._ov_zoom_in)
+
+        self._zoom_overlay.adjustSize()
+        self._zoom_overlay.raise_()
+
+        self._stack.addWidget(self._canvas_host)
 
         self._update_color_button_style(self._color_btn, self._active_color)
         self._update_color_button_style(self._text_color_btn, self._active_color)
@@ -543,6 +581,9 @@ class MainWindow(QMainWindow):
         self._btn_zoom_out.setText(t("toolbar.zoom_out"))
         self._btn_zoom_fit.setText(t("toolbar.zoom_fit"))
         self._btn_zoom_in.setText(t("toolbar.zoom_in"))
+        self._ov_zoom_out.setToolTip(t("toolbar.zoom_out"))
+        self._ov_zoom_pct.setToolTip(t("toolbar.zoom_fit"))
+        self._ov_zoom_in.setToolTip(t("toolbar.zoom_in"))
 
         self._empty_headline.setText(t("empty.headline"))
         self._empty_subtext.setText(t("empty.subtext"))
@@ -618,7 +659,28 @@ class MainWindow(QMainWindow):
         self._canvas.set_page_image(
             pil_img, self._session.page_edits(self._page_index), self._zoom
         )
+        self._ov_zoom_pct.setText(f"{int(round(self._zoom * 100))}%")
+        self._reposition_zoom_overlay()
         self._update_controls_state()
+
+    def _reposition_zoom_overlay(self) -> None:
+        self._zoom_overlay.adjustSize()
+        margin = 22
+        x = max(8, self._canvas_host.width() - self._zoom_overlay.width() - margin)
+        y = max(8, self._canvas_host.height() - self._zoom_overlay.height() - margin)
+        self._zoom_overlay.move(x, y)
+        self._zoom_overlay.raise_()
+
+    def _on_pan_delta(self, dx: int, dy: int) -> None:
+        hbar = self._scroll.horizontalScrollBar()
+        vbar = self._scroll.verticalScrollBar()
+        hbar.setValue(hbar.value() - dx)
+        vbar.setValue(vbar.value() - dy)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_zoom_overlay"):
+            self._reposition_zoom_overlay()
 
     def _confirm_discard_unsaved(self) -> bool:
         if not self._session.is_dirty or not self._doc.is_open or self._doc.path is None:

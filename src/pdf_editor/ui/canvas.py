@@ -37,6 +37,7 @@ class PdfCanvasWidget(QWidget):
     annotation_created = Signal(object)  # AnnotationItem
     crop_selected = Signal(object)  # RectNorm
     zoom_requested = Signal(float)  # delta factor
+    pan_requested = Signal(int, int)  # dx, dy scroll deltas in pixels
     status_hint = Signal(str)  # localized status message
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -56,6 +57,8 @@ class PdfCanvasWidget(QWidget):
         self._zoom: float = 1.0
 
         self._dragging: bool = False
+        self._panning: bool = False
+        self._last_pan_global: QPointF | None = None
         self._start_norm: tuple[float, float] | None = None
         self._curr_norm: tuple[float, float] | None = None
         self._poly_points: list[tuple[float, float]] = []
@@ -190,7 +193,17 @@ class PdfCanvasWidget(QWidget):
                 self.update()
             return
 
-        if event.button() != Qt.MouseButton.LeftButton or self._tool == ToolKind.PAN:
+        # Drag-to-pan: left button in PAN mode, or middle button in any tool
+        if event.button() == Qt.MouseButton.MiddleButton or (
+            event.button() == Qt.MouseButton.LeftButton and self._tool == ToolKind.PAN
+        ):
+            self._panning = True
+            self._last_pan_global = event.globalPosition()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+
+        if event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
 
         nx, ny = self._to_norm(event.position())
@@ -217,6 +230,15 @@ class PdfCanvasWidget(QWidget):
     def mouseMoveEvent(self, event) -> None:
         if self._pixmap is None:
             return super().mouseMoveEvent(event)
+        if self._panning and self._last_pan_global is not None:
+            curr_global = event.globalPosition()
+            dx = int(round(curr_global.x() - self._last_pan_global.x()))
+            dy = int(round(curr_global.y() - self._last_pan_global.y()))
+            self._last_pan_global = curr_global
+            if dx != 0 or dy != 0:
+                self.pan_requested.emit(dx, dy)
+            event.accept()
+            return
         pos = self._to_norm(event.position())
         self._hover_norm = pos
         if self._dragging:
@@ -229,6 +251,20 @@ class PdfCanvasWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        if self._panning and event.button() in (
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.MiddleButton,
+        ):
+            self._panning = False
+            self._last_pan_global = None
+            self.setCursor(
+                Qt.CursorShape.OpenHandCursor
+                if self._tool == ToolKind.PAN
+                else Qt.CursorShape.CrossCursor
+            )
+            event.accept()
+            return
+
         if not self._dragging or event.button() != Qt.MouseButton.LeftButton:
             return super().mouseReleaseEvent(event)
 
